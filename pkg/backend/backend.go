@@ -51,3 +51,11 @@ func (b *gmsaBackend) authRenew(ctx context.Context, req *logical.Request, d *fr
 	// Optional: add realm/SPN freshness checks or deny renew if role disallows.
 	return framework.LeaseExtend(0, 0, req.Secret, req.Data)
 }
+b.Backend = &framework.Backend{
+  Help:        "Authenticate Windows workloads via gMSA (Kerberos/Negotiate).",
+  BackendType: logical.TypeCredential,
+  PathsSpecial: &logical.Paths{Unauthenticated: []string{"login"}},
+  Paths: framework.PathAppend(pathsConfig(b), pathsRole(b), pathsLogin(b)),
+  AuthRenew:      nil,            // let Vault core handle period renewals
+  RunningVersion: pluginVersion,
+}
