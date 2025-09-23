@@ -114,16 +114,32 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		tokenType = logical.TokenTypeDefault
 	}
 
+	// Build enhanced metadata with security information
+	metadata := map[string]string{
+		"principal":  res.Principal,
+		"realm":      res.Realm,
+		"role":       role.Name,
+		"spn":        res.SPN,
+		"sids_count": fmt.Sprintf("%d", len(res.GroupSIDs)),
+	}
+
+	// Add PAC validation flags to metadata for audit purposes
+	for flag, value := range res.Flags {
+		metadata["pac_"+flag] = fmt.Sprintf("%t", value)
+	}
+
+	// Add security warnings if PAC validation failed
+	if res.Flags["PAC_VALIDATION_FAILED"] || res.Flags["PAC_ERROR"] {
+		metadata["security_warning"] = "PAC validation failed - group authorization may be unreliable"
+	}
+	if res.Flags["PAC_NOT_FOUND"] {
+		metadata["security_warning"] = "PAC not found - group authorization unavailable"
+	}
+
 	resp := &logical.Response{
 		Auth: &logical.Auth{
-			Policies: policies,
-			Metadata: map[string]string{
-				"principal":  res.Principal,
-				"realm":      res.Realm,
-				"role":       role.Name,
-				"spn":        res.SPN,
-				"sids_count": fmt.Sprintf("%d", len(res.GroupSIDs)),
-			},
+			Policies:    policies,
+			Metadata:    metadata,
 			DisplayName: res.Principal,
 			TokenType:   tokenType,
 		},
