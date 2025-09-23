@@ -3,11 +3,12 @@ package backend
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 
-	"github.com/lpassig/vault-plugin-auth-gmsa/pkg/backend/internals/kerb"
+	"github.com/lpassig/vault-plugin-auth-gmsa/internal/kerb"
 )
 
 func pathsLogin(b *gmsaBackend) []*framework.Path {
@@ -49,7 +50,6 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		return logical.ErrorResponse("auth method not configured"), nil
 	}
 
-	// Kerberos validation stub (wire real logic in internals/kerb/validator.go)
 	v := kerb.NewValidator(kerb.Options{
 		Realm:        cfg.Realm,
 		SPN:          cfg.SPN,
@@ -57,7 +57,7 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		RequireCB:    cfg.AllowChannelBind,
 	})
 	res, kerr := v.ValidateSPNEGO(ctx, spnegoB64, cb)
-	if kerr != nil {
+	if kerr.SafeMessage() != "" { // indicates error
 		return logical.ErrorResponse(kerr.SafeMessage()), nil
 	}
 
@@ -88,28 +88,34 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		policies = tmp
 	}
 
-	meta := map[string]string{
-		"principal":  res.Principal,
-		"realm":      res.Realm,
-		"role":       role.Name,
-		"spn":        res.SPN,
-		"sids_count": fmt.Sprintf("%d", len(res.GroupSIDs)),
+	var tokenType logical.TokenType
+	switch role.TokenType {
+	case "service":
+		tokenType = logical.TokenTypeService
+	default:
+		tokenType = logical.TokenTypeDefault
 	}
 
 	resp := &logical.Response{
 		Auth: &logical.Auth{
 			Policies:    policies,
-			Metadata:    meta,
+			Metadata:    map[string]string{
+				"principal":  res.Principal,
+				"realm":      res.Realm,
+				"role":       role.Name,
+				"spn":        res.SPN,
+				"sids_count": fmt.Sprintf("%d", len(res.GroupSIDs)),
+			},
 			DisplayName: res.Principal,
-			TokenType:   role.TokenType, // "service" or "default"
+			TokenType:   tokenType,
 		},
 	}
 
 	if role.Period > 0 {
-		resp.Auth.Period = role.Period
+		resp.Auth.Period = time.Duration(role.Period) * time.Second
 	}
 	if role.MaxTTL > 0 {
-		resp.Auth.TTL = role.MaxTTL
+		resp.Auth.TTL = time.Duration(role.MaxTTL) * time.Second
 	}
 	return resp, nil
 }
