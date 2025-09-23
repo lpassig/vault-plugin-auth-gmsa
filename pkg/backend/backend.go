@@ -20,7 +20,8 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 	b := &gmsaBackend{now: time.Now}
 
 	b.Backend = &framework.Backend{
-		Help:        "Authenticate Windows workloads via gMSA (Kerberos/Negotiate) and map to Vault tokens.",
+		// Help describes the purpose and security model at a high level.
+		Help:        "Authenticate Windows workloads via gMSA (Kerberos/Negotiate). Authorization via roles to Vault policies.",
 		BackendType: logical.TypeCredential,
 		PathsSpecial: &logical.Paths{
 			Unauthenticated: []string{"login"},

@@ -21,7 +21,7 @@ func pathsConfig(b *gmsaBackend) []*framework.Path {
 				"clock_skew_sec":        {Type: framework.TypeInt, Description: "Allowed clock skew seconds (default 300)."},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
-				logical.CreateOperation: &framework.PathOperation{Callback: b.configWrite},
+				// Use Update for both create and update to avoid ExistenceCheck requirement
 				logical.UpdateOperation: &framework.PathOperation{Callback: b.configWrite},
 				logical.ReadOperation:   &framework.PathOperation{Callback: b.configRead},
 				logical.DeleteOperation: &framework.PathOperation{Callback: b.configDelete},

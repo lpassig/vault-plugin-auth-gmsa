@@ -2,6 +2,8 @@ package backend
 
 import "strings"
 
+// csvToSlice converts a comma-separated string into a list of non-empty, trimmed
+// values. Returns nil for empty input to distinguish "unset" from "set empty".
 func csvToSlice(v any) []string {
 	s, _ := v.(string)
 	s = strings.TrimSpace(s)

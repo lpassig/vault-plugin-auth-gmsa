@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
@@ -26,7 +27,7 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 				"merge_strategy":   {Type: framework.TypeString, Description: "union or override (default union)."},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
-				logical.CreateOperation: &framework.PathOperation{Callback: b.roleWrite},
+				// Use Update for writes to avoid requiring ExistenceCheck
 				logical.UpdateOperation: &framework.PathOperation{Callback: b.roleWrite},
 				logical.ReadOperation:   &framework.PathOperation{Callback: b.roleRead},
 				logical.DeleteOperation: &framework.PathOperation{Callback: b.roleDelete},
@@ -44,13 +45,14 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 
 func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
+	tokenTypeRaw, _ := d.Get("token_type").(string)
 	role := Role{
 		Name:           name,
 		AllowedRealms:  csvToSlice(d.Get("allowed_realms")),
 		AllowedSPNs:    csvToSlice(d.Get("allowed_spns")),
 		BoundGroupSIDs: csvToSlice(d.Get("bound_group_sids")),
 		TokenPolicies:  csvToSlice(d.Get("token_policies")),
-		TokenType:      tokenTypeOrDefault(d.Get("token_type")),
+		TokenType:      tokenTypeRaw,
 		Period:         intOrDefault(d.Get("period"), 0),
 		MaxTTL:         intOrDefault(d.Get("max_ttl"), 0),
 		DenyPolicies:   csvToSlice(d.Get("deny_policies")),
@@ -59,15 +61,31 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 	if err := validateRole(&role); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
-    // Validate token type and normalize
-    switch role.TokenType {
-    case "", "default":
-        role.TokenType = "default"
-    case "service":
-        // ok
-    default:
-        return logical.ErrorResponse("token_type must be 'default' or 'service'"), nil
-    }
+	// Validate durations: non-negative, reasonable caps (<= 24h)
+	if role.Period < 0 || role.Period > int(24*time.Hour/time.Second) {
+		return logical.ErrorResponse("period must be between 0 and 86400 seconds"), nil
+	}
+	if role.MaxTTL < 0 || role.MaxTTL > int(24*time.Hour/time.Second) {
+		return logical.ErrorResponse("max_ttl must be between 0 and 86400 seconds"), nil
+	}
+	// Validate merge strategy
+	switch role.MergeStrategy {
+	case "union", "override":
+	default:
+		return logical.ErrorResponse("merge_strategy must be 'union' or 'override'"), nil
+	}
+	// Normalize policy lists (dedupe)
+	role.TokenPolicies = unique(role.TokenPolicies)
+	role.DenyPolicies = unique(role.DenyPolicies)
+	// Validate token type and normalize
+	switch role.TokenType {
+	case "", "default":
+		role.TokenType = "default"
+	case "service":
+		// ok
+	default:
+		return logical.ErrorResponse("token_type must be 'default' or 'service'"), nil
+	}
 	if err := writeRole(ctx, b.storage, &role); err != nil {
 		return nil, err
 	}

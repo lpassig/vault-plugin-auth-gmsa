@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -15,24 +16,40 @@ func pathsLogin(b *gmsaBackend) []*framework.Path {
 	return []*framework.Path{
 		{
 			Pattern:      "login",
-			HelpSynopsis: "Authenticate using a SPNEGO token (base64).",
+			HelpSynopsis: "Authenticate using a SPNEGO token (base64). Enforces optional TLS channel binding if configured.",
 			Fields: map[string]*framework.FieldSchema{
 				"role":    {Type: framework.TypeString, Description: "Role name to use for authorization.", Required: true},
 				"spnego":  {Type: framework.TypeString, Description: "Base64-encoded SPNEGO token.", Required: true},
 				"cb_tlse": {Type: framework.TypeString, Description: "Optional TLS channel binding (tls-server-end-point) hex/base64."},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
+				// Use Update for writes to avoid ExistenceCheck requirement
 				logical.UpdateOperation: &framework.PathOperation{Callback: b.handleLogin},
-				logical.CreateOperation: &framework.PathOperation{Callback: b.handleLogin},
 			},
 		},
 	}
 }
 
 func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	// Defensive timeout to avoid long-running Kerberos work under request context
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	roleName := d.Get("role").(string)
 	spnegoB64 := d.Get("spnego").(string)
 	cb := d.Get("cb_tlse").(string)
+
+	// Input size limits to reduce memory DoS risk
+	if len(spnegoB64) == 0 || len(spnegoB64) > 64*1024 {
+		return logical.ErrorResponse("spnego token size invalid"), nil
+	}
+	if len(cb) > 4096 {
+		return logical.ErrorResponse("channel binding too large"), nil
+	}
+	// Quick validation of base64 format before deeper processing
+	if _, err := base64.StdEncoding.DecodeString(spnegoB64); err != nil {
+		return logical.ErrorResponse("invalid spnego encoding"), nil
+	}
 
 	role, err := readRole(ctx, b.storage, roleName)
 	if err != nil {
@@ -56,8 +73,8 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		ClockSkewSec: cfg.ClockSkewSec,
 		RequireCB:    cfg.AllowChannelBind,
 	})
-    res, kerr := v.ValidateSPNEGO(ctx, spnegoB64, cb)
-    if !kerr.IsZero() {
+	res, kerr := v.ValidateSPNEGO(ctx, spnegoB64, cb)
+	if !kerr.IsZero() {
 		return logical.ErrorResponse(kerr.SafeMessage()), nil
 	}
 
@@ -98,8 +115,8 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 
 	resp := &logical.Response{
 		Auth: &logical.Auth{
-			Policies:    policies,
-			Metadata:    map[string]string{
+			Policies: policies,
+			Metadata: map[string]string{
 				"principal":  res.Principal,
 				"realm":      res.Realm,
 				"role":       role.Name,

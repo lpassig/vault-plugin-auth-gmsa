@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/vault/sdk/logical"
@@ -114,18 +116,96 @@ func listRoles(ctx context.Context, s logical.Storage) ([]string, error) {
 
 // Validation helpers
 
+// normalizeAndValidateConfig validates operator-provided configuration. It is
+// deliberately strict to reduce misconfiguration risk.
 func normalizeAndValidateConfig(c *Config) error {
+	// Validate realm: UPPERCASE, limited character set.
 	if c.Realm == "" || strings.ToUpper(c.Realm) != c.Realm {
 		return errors.New("realm must be UPPERCASE and non-empty")
 	}
+	realmRe := regexp.MustCompile(`^[A-Z0-9.-]+$`)
+	if !realmRe.MatchString(c.Realm) {
+		return errors.New("realm contains invalid characters")
+	}
+
+	// Validate KDCs: at least one, each as host or host:port; cap list size.
 	if len(c.KDCs) == 0 {
 		return errors.New("kdcs must be non-empty")
 	}
-	if _, err := base64.StdEncoding.DecodeString(c.KeytabB64); err != nil {
+	if len(c.KDCs) > 10 {
+		return errors.New("too many KDCs; limit to 10")
+	}
+	hostRe := regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
+	uniqueKDC := map[string]struct{}{}
+	normalizedKDCs := make([]string, 0, len(c.KDCs))
+	for _, raw := range c.KDCs {
+		k := strings.TrimSpace(raw)
+		if k == "" {
+			return errors.New("kdcs contains empty entry")
+		}
+		host := k
+		if strings.Contains(k, ":") {
+			h, p, err := net.SplitHostPort(k)
+			if err != nil {
+				return errors.New("kdcs entry has invalid host:port")
+			}
+			if p == "" {
+				return errors.New("kdcs port cannot be empty")
+			}
+			host = h
+		}
+		if !hostRe.MatchString(host) {
+			return errors.New("kdcs host contains invalid characters")
+		}
+		if _, seen := uniqueKDC[k]; seen {
+			continue
+		}
+		uniqueKDC[k] = struct{}{}
+		normalizedKDCs = append(normalizedKDCs, k)
+	}
+	c.KDCs = normalizedKDCs
+
+	// Validate keytab: base64 and size limit (<= 1 MiB decoded).
+	kb, err := base64.StdEncoding.DecodeString(c.KeytabB64)
+	if err != nil {
 		return errors.New("keytab must be base64-encoded")
 	}
+	if len(kb) == 0 {
+		return errors.New("keytab cannot be empty")
+	}
+	if len(kb) > 1*1024*1024 {
+		return errors.New("keytab too large; must be <= 1MiB")
+	}
+
+	// Validate SPN: SERVICE/host["@REALM" optional], ensure SERVICE upper-case.
 	if !strings.Contains(c.SPN, "/") {
 		return errors.New("spn must look like HTTP/host.domain")
+	}
+	spnParts := strings.SplitN(c.SPN, "/", 2)
+	if len(spnParts) != 2 || spnParts[0] == "" || spnParts[1] == "" {
+		return errors.New("spn must be in the form SERVICE/host")
+	}
+	service := spnParts[0]
+	if service != strings.ToUpper(service) {
+		return errors.New("spn service must be UPPERCASE")
+	}
+	// host may include @REALM suffix; validate host separately.
+	hostAndRealm := spnParts[1]
+	hostOnly := hostAndRealm
+	if strings.Contains(hostAndRealm, "@") {
+		hr := strings.SplitN(hostAndRealm, "@", 2)
+		hostOnly = hr[0]
+		if hr[1] != c.Realm {
+			return errors.New("spn realm must match configured realm")
+		}
+	}
+	if !hostRe.MatchString(hostOnly) || !strings.Contains(hostOnly, ".") {
+		return errors.New("spn host must be a FQDN")
+	}
+
+	// Validate clock skew range.
+	if c.ClockSkewSec < 0 || c.ClockSkewSec > 900 {
+		return errors.New("clock_skew_sec must be between 0 and 900 seconds")
 	}
 	return nil
 }
