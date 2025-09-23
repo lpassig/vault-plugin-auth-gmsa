@@ -5,7 +5,6 @@ import (
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
-	"github.com/lpassig/vault-plugin-auth-gmsa/internal"
 )
 
 const configPath = "config"

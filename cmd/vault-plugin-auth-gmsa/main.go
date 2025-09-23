@@ -7,7 +7,7 @@ import (
 	"github.com/hashicorp/vault/sdk/helper/pluginutil"
 	"github.com/hashicorp/vault/sdk/plugin"
 
-	"github.com/lpassig/vault-plugin-auth-gmsa/backend"
+	"github.com/lpassig/vault-plugin-auth-gmsa/pkg/backend"
 )
 
 func main() {
