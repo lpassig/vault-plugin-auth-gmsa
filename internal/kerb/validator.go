@@ -35,6 +35,7 @@ type safeErr struct {
 
 func (e safeErr) Error() string       { return e.err.Error() }
 func (e safeErr) SafeMessage() string { return e.msg }
+func (e safeErr) IsZero() bool        { return e.err == nil && e.msg == "" }
 
 func fail(err error, msg string) safeErr { return safeErr{err: err, msg: msg} }
 

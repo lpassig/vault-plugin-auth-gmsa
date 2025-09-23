@@ -59,6 +59,15 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 	if err := validateRole(&role); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
+    // Validate token type and normalize
+    switch role.TokenType {
+    case "", "default":
+        role.TokenType = "default"
+    case "service":
+        // ok
+    default:
+        return logical.ErrorResponse("token_type must be 'default' or 'service'"), nil
+    }
 	if err := writeRole(ctx, b.storage, &role); err != nil {
 		return nil, err
 	}

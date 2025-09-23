@@ -56,8 +56,8 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		ClockSkewSec: cfg.ClockSkewSec,
 		RequireCB:    cfg.AllowChannelBind,
 	})
-	res, kerr := v.ValidateSPNEGO(ctx, spnegoB64, cb)
-	if kerr.SafeMessage() != "" { // indicates error
+    res, kerr := v.ValidateSPNEGO(ctx, spnegoB64, cb)
+    if !kerr.IsZero() {
 		return logical.ErrorResponse(kerr.SafeMessage()), nil
 	}
 
