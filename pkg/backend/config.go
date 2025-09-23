@@ -35,7 +35,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func pathConfig(b *gMSABackend) *framework.Path {
+func pathConfig(b *gmsaBackend) *framework.Path {
 	return &framework.Path{
 		Pattern: "config",
 		Fields: map[string]*framework.FieldSchema{
@@ -55,7 +55,7 @@ func pathConfig(b *gMSABackend) *framework.Path {
 	}
 }
 
-func (b *gMSABackend) configWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+func (b *gmsaBackend) configWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	cfg := &Config{
 		Realm:      strings.ToUpper(strings.TrimSpace(getString(d, "realm"))),
 		SPN:        strings.TrimSpace(getString(d, "spn")),
@@ -85,7 +85,7 @@ func (b *gMSABackend) configWrite(ctx context.Context, req *logical.Request, d *
 	return &logical.Response{Data: map[string]interface{}{"status": "ok"}}, nil
 }
 
-func (b *gMSABackend) configRead(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
+func (b *gmsaBackend) configRead(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
 	cfg, err := loadConfig(ctx, req.Storage)
 	if err != nil {
 		return nil, err

@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
-func pathLogin(b *gMSABackend) *framework.Path {
+func pathLogin(b *gmsaBackend) *framework.Path {
 	return &framework.Path{
 		Pattern: "login",
 		Fields: map[string]*framework.FieldSchema{
@@ -32,7 +32,7 @@ func pathLogin(b *gMSABackend) *framework.Path {
 	}
 }
 
-func (b *gMSABackend) handleLogin(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	cfg, err := loadConfig(ctx, req.Storage)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
