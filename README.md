@@ -20,6 +20,383 @@ This implementation provides **state-of-the-art** Kerberos authentication with:
 - **Mutual trust**: Kerberos tickets are validated by Vault using the gMSA SPN key.
 - **Policy mapping**: Use AD **group SIDs** or principal names to map to Vault policies.
 
+## 🎯 **Primary Use Case: Vault Agent + gMSA + Task Scheduler**
+
+This is the **main production use case** for this plugin: running Vault Agent under a Group Managed Service Account (gMSA) in Windows Task Scheduler to automatically authenticate and retrieve secrets without hardcoded credentials.
+
+### **Complete Step-by-Step Setup Guide**
+
+#### **Prerequisites**
+- Windows Server with Task Scheduler
+- Active Directory domain with gMSA configured
+- Vault server accessible from Windows machines
+- Vault Agent binary installed on Windows machine
+
+---
+
+### **Step 1: Prepare the gMSA**
+
+#### **1.1 Create gMSA in Active Directory**
+```powershell
+# Create gMSA (run on domain controller or with AD management tools)
+New-ADServiceAccount -Name "vault-agent-gmsa" -DNSHostName "vault-agent-gmsa.yourdomain.com" -ServicePrincipalNames "HTTP/vault.yourdomain.com"
+
+# Add SPN for Vault server
+setspn -A HTTP/vault.yourdomain.com YOURDOMAIN\vault-agent-gmsa$
+
+# Verify SPN
+setspn -L YOURDOMAIN\vault-agent-gmsa$
+```
+
+#### **1.2 Grant gMSA Permissions**
+```powershell
+# Grant gMSA permission to retrieve its own password
+Add-ADServiceAccount -Identity "vault-agent-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "YOURDOMAIN\vault-agent-gmsa$"
+
+# Add gMSA to required AD groups (for policy mapping)
+Add-ADGroupMember -Identity "Vault-Agents" -Members "YOURDOMAIN\vault-agent-gmsa$"
+```
+
+#### **1.3 Export Keytab**
+```powershell
+# Export keytab for the gMSA (run on domain controller)
+ktpass -princ HTTP/vault.yourdomain.com@YOURDOMAIN.COM -mapuser YOURDOMAIN\vault-agent-gmsa$ -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out vault-agent.keytab
+
+# Convert to base64 for Vault configuration
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("vault-agent.keytab"))
+```
+
+---
+
+### **Step 2: Configure Vault Server**
+
+#### **2.1 Enable and Configure Auth Method**
+```bash
+# Enable the gMSA auth method
+vault auth enable -path=gmsa vault-plugin-auth-gmsa
+
+# Configure the auth method
+vault write auth/gmsa/config \
+    realm="YOURDOMAIN.COM" \
+    kdc_hosts="dc1.yourdomain.com,dc2.yourdomain.com" \
+    spn="HTTP/vault.yourdomain.com" \
+    keytab_path="/etc/vault.d/krb5/vault-agent.keytab" \
+    clock_skew_sec=300 \
+    allow_channel_binding=true
+```
+
+#### **2.2 Create Policy for Secrets**
+```bash
+# Create a policy for the application secrets
+vault policy write vault-agent-policy - <<EOF
+path "secret/data/my-app/*" {
+  capabilities = ["read"]
+}
+
+path "secret/metadata/my-app/*" {
+  capabilities = ["list", "read"]
+}
+EOF
+```
+
+#### **2.3 Create Role for gMSA**
+```bash
+# Get the SID of the AD group containing the gMSA
+# Use: Get-ADGroup "Vault-Agents" | Select-Object SID
+
+# Create role with group-based access
+vault write auth/gmsa/role/vault-agent-role \
+    name="vault-agent-role" \
+    allowed_realms="YOURDOMAIN.COM" \
+    allowed_spns="HTTP/vault.yourdomain.com" \
+    bound_group_sids="S-1-5-21-1234567890-1234567890-1234567890-1234" \
+    token_policies="vault-agent-policy" \
+    token_type="service" \
+    period=3600 \
+    max_ttl=7200
+```
+
+#### **2.4 Store Application Secrets**
+```bash
+# Store secrets that the application needs
+vault kv put secret/my-app/database \
+    host="db-server.yourdomain.com" \
+    username="app-user" \
+    password="secure-password"
+
+vault kv put secret/my-app/api \
+    api_key="your-api-key" \
+    endpoint="https://api.yourdomain.com"
+```
+
+---
+
+### **Step 3: Configure Vault Agent on Windows**
+
+#### **3.1 Create Vault Agent Configuration**
+```hcl
+# C:\vault\vault-agent.hcl
+pid_file = "C:\\vault\\pidfile"
+
+auto_auth {
+    method "gmsa" {
+        config = {
+            role = "vault-agent-role"
+        }
+    }
+}
+
+vault {
+    address = "https://vault.yourdomain.com"
+    retry {
+        num_retries = 5
+    }
+}
+
+template {
+    source      = "C:\\vault\\templates\\database.tpl"
+    destination = "C:\\vault\\secrets\\database.json"
+    perms       = 0644
+    command     = "C:\\vault\\scripts\\restart-app.bat"
+}
+
+template {
+    source      = "C:\\vault\\templates\\api.tpl"
+    destination = "C:\\vault\\secrets\\api.json"
+    perms       = 0644
+    command     = "C:\\vault\\scripts\\restart-app.bat"
+}
+```
+
+#### **3.2 Create Secret Templates**
+```hcl
+# C:\vault\templates\database.tpl
+{{ with secret "secret/my-app/database" }}
+{
+  "host": "{{ .Data.host }}",
+  "username": "{{ .Data.username }}",
+  "password": "{{ .Data.password }}",
+  "last_updated": "{{ .Data.metadata.updated_time }}"
+}
+{{ end }}
+```
+
+```hcl
+# C:\vault\templates\api.tpl
+{{ with secret "secret/my-app/api" }}
+{
+  "api_key": "{{ .Data.api_key }}",
+  "endpoint": "{{ .Data.endpoint }}",
+  "last_updated": "{{ .Data.metadata.updated_time }}"
+}
+{{ end }}
+```
+
+#### **3.3 Create Application Restart Script**
+```batch
+@echo off
+REM C:\vault\scripts\restart-app.bat
+echo Restarting application due to secret update...
+net stop "MyApplication"
+net start "MyApplication"
+echo Application restarted successfully.
+```
+
+---
+
+### **Step 4: Install Vault Agent as Windows Service**
+
+#### **4.1 Install Vault Agent Service**
+```powershell
+# Create the service
+sc.exe create "VaultAgent" binpath="C:\vault\vault.exe agent -config=C:\vault\vault-agent.hcl" start=auto
+
+# Configure service to run under gMSA
+sc.exe config "VaultAgent" obj="YOURDOMAIN\vault-agent-gmsa$"
+sc.exe config "VaultAgent" password=""
+
+# Grant service logon right to gMSA
+# Run this on domain controller or with appropriate permissions
+Set-ADServiceAccount -Identity "vault-agent-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "YOURDOMAIN\vault-agent-gmsa$"
+
+# Start the service
+sc.exe start "VaultAgent"
+```
+
+#### **4.2 Verify Service Installation**
+```powershell
+# Check service status
+sc.exe query "VaultAgent"
+
+# Check service logs
+Get-WinEvent -LogName Application | Where-Object {$_.ProviderName -eq "VaultAgent"}
+
+# Test authentication manually
+C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-agent-role
+```
+
+---
+
+### **Step 5: Configure Task Scheduler**
+
+#### **5.1 Create Task Scheduler Job**
+```powershell
+# Create a scheduled task that runs under gMSA
+$action = New-ScheduledTaskAction -Execute "C:\vault\scripts\my-app-task.bat"
+$trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+# Create task with gMSA identity
+Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "YOURDOMAIN\vault-agent-gmsa$" -Password ""
+```
+
+#### **5.2 Create Application Task Script**
+```batch
+@echo off
+REM C:\vault\scripts\my-app-task.bat
+echo Starting application task...
+
+REM Read secrets from Vault Agent generated files
+for /f "tokens=*" %%i in ('type C:\vault\secrets\database.json') do set DB_CONFIG=%%i
+for /f "tokens=*" %%i in ('type C:\vault\secrets\api.json') do set API_CONFIG=%%i
+
+REM Use the secrets in your application
+echo Database config: %DB_CONFIG%
+echo API config: %API_CONFIG%
+
+REM Your application logic here
+C:\myapp\myapp.exe --db-config="%DB_CONFIG%" --api-config="%API_CONFIG%"
+
+echo Task completed successfully.
+```
+
+---
+
+### **Step 6: Testing and Verification**
+
+#### **6.1 Test Authentication**
+```powershell
+# Test gMSA authentication manually
+C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-agent-role
+
+# Verify token and permissions
+C:\vault\vault.exe token lookup
+
+# Test secret access
+C:\vault\vault.exe kv get secret/my-app/database
+```
+
+#### **6.2 Monitor Vault Agent**
+```powershell
+# Check Vault Agent logs
+Get-Content C:\vault\vault-agent.log -Tail 50
+
+# Check service status
+sc.exe query "VaultAgent"
+
+# Verify secret files are created
+dir C:\vault\secrets\
+```
+
+#### **6.3 Test Task Scheduler Execution**
+```powershell
+# Run task manually to test
+Start-ScheduledTask -TaskName "MyApp-SecretRefresh"
+
+# Check task history
+Get-ScheduledTask -TaskName "MyApp-SecretRefresh" | Get-ScheduledTaskInfo
+```
+
+---
+
+### **Step 7: Production Monitoring**
+
+#### **7.1 Health Checks**
+```bash
+# Check Vault auth method health
+curl -X GET "https://vault.yourdomain.com/v1/auth/gmsa/health?detailed=true"
+
+# Check metrics
+curl -X GET "https://vault.yourdomain.com/v1/auth/gmsa/metrics"
+```
+
+#### **7.2 Log Monitoring**
+```powershell
+# Monitor Vault Agent logs
+Get-WinEvent -LogName Application | Where-Object {$_.ProviderName -eq "VaultAgent"} | Select-Object TimeCreated, LevelDisplayName, Message
+
+# Monitor authentication events in Vault logs
+# Check Vault audit logs for auth/gmsa/login events
+```
+
+---
+
+### **🔧 Troubleshooting Common Issues**
+
+#### **Authentication Failures**
+```powershell
+# Check gMSA SPN
+setspn -L YOURDOMAIN\vault-agent-gmsa$
+
+# Verify gMSA group membership
+Get-ADServiceAccount -Identity "vault-agent-gmsa" | Get-ADPrincipalGroupMembership
+
+# Test Kerberos ticket request
+klist -li 0x3e7  # Check if service can get tickets
+```
+
+#### **Service Issues**
+```powershell
+# Check service configuration
+sc.exe qc "VaultAgent"
+
+# Check service permissions
+sc.exe sdshow "VaultAgent"
+
+# Restart service
+sc.exe stop "VaultAgent"
+sc.exe start "VaultAgent"
+```
+
+#### **Network Issues**
+```powershell
+# Test connectivity to Vault
+Test-NetConnection vault.yourdomain.com -Port 8200
+
+# Test DNS resolution
+nslookup vault.yourdomain.com
+nslookup dc1.yourdomain.com
+```
+
+---
+
+### **🎯 Benefits of This Architecture**
+
+- **✅ Zero Hardcoded Credentials**: gMSA provides automatic authentication
+- **✅ Automatic Secret Rotation**: Vault Agent handles token refresh and secret updates
+- **✅ Group-Based Access Control**: Access controlled by AD group membership
+- **✅ Comprehensive Audit Trail**: All authentication events logged with security flags
+- **✅ High Availability**: Works with Vault clustering and Windows clustering
+- **✅ Enterprise Security**: Uses Kerberos authentication with PAC validation
+- **✅ Scheduled Execution**: Task Scheduler provides reliable job execution
+- **✅ Application Integration**: Seamless integration with existing Windows applications
+
+---
+
+### **📋 Production Checklist**
+
+- [ ] gMSA created with correct SPN
+- [ ] gMSA added to appropriate AD groups
+- [ ] Keytab exported and configured in Vault
+- [ ] Vault auth method configured and tested
+- [ ] Vault policies and roles created
+- [ ] Vault Agent installed as Windows service
+- [ ] Service configured to run under gMSA
+- [ ] Secret templates created and tested
+- [ ] Task Scheduler jobs configured
+- [ ] Monitoring and alerting configured
+- [ ] Backup and recovery procedures documented
+- [ ] Security review completed
 
 ## Prereqs
 1. AD domain with KDCs reachable by the Vault server.
@@ -208,144 +585,6 @@ The current implementation provides **defense-in-depth** security through:
 5. **Audit Trail**: Comprehensive logging with security flags
 
 **Recommendation**: ✅ **PRODUCTION READY** - Full PAC extraction and validation implemented with gokrb5's proven security mechanisms.
-
-## Vault Agent + gMSA Integration Example
-
-This section demonstrates how to use Vault Agent running under a Group Managed Service Account (gMSA) to automatically authenticate and retrieve secrets.
-
-### **Use Case**
-- Vault Agent running as a Windows service
-- Task Scheduler jobs using gMSA
-- Automated secret retrieval without hardcoded credentials
-- Secure service-to-service authentication
-
-### **Authentication Flow**
-```
-Windows Service → Request Kerberos ticket for gMSA → Active Directory
-Active Directory → Returns Kerberos ticket with PAC → Windows Service
-Windows Service → Provides SPNEGO token → Vault Agent
-Vault Agent → POST /auth/gmsa/login with SPNEGO → Vault Server
-Vault Server → Validate ticket + extract group SIDs → Vault Agent
-Vault Agent → Use token to read secrets → Vault Server
-Vault Server → Returns requested secrets → Vault Agent
-```
-
-### **Step 1: Configure Vault Auth Method**
-
-```bash
-# Enable the auth method
-vault auth enable gmsa
-
-# Configure the auth method
-vault write auth/gmsa/config \
-    realm="YOURDOMAIN.COM" \
-    keytab="base64-encoded-keytab" \
-    spn="HTTP/vault.yourdomain.com" \
-    clock_skew_sec=300
-
-# Create a role for the gMSA
-vault write auth/gmsa/role/my-gmsa-role \
-    token_policies="my-secrets-policy" \
-    token_ttl=1h \
-    token_max_ttl=24h \
-    allowed_realms="YOURDOMAIN.COM" \
-    allowed_spns="HTTP/vault.yourdomain.com" \
-    bound_group_sids="S-1-5-21-1234567890-1234567890-1234567890-1234"
-```
-
-### **Step 2: Configure Vault Agent**
-
-```hcl
-# vault-agent.hcl
-pid_file = "./pidfile"
-
-auto_auth {
-    method "gmsa" {
-        config = {
-            role = "my-gmsa-role"
-        }
-    }
-}
-
-vault {
-    address = "https://vault.yourdomain.com"
-}
-
-template {
-    source      = "./secrets.tpl"
-    destination = "./secrets.json"
-    perms       = 0644
-}
-```
-
-### **Step 3: Run Vault Agent as gMSA**
-
-```powershell
-# Install Vault Agent as Windows Service
-sc.exe create "VaultAgent" binpath="C:\vault\vault.exe agent -config=C:\vault\vault-agent.hcl" start=auto
-
-# Configure service to run under gMSA
-sc.exe config "VaultAgent" obj="DOMAIN\gmsa-account$"
-sc.exe config "VaultAgent" password=""
-
-# Start the service
-sc.exe start "VaultAgent"
-```
-
-### **Step 4: Example Secret Template**
-
-```hcl
-# secrets.tpl
-{{ with secret "secret/my-app" }}
-{
-  "database_password": "{{ .Data.password }}",
-  "api_key": "{{ .Data.api_key }}",
-  "last_updated": "{{ .Data.metadata.updated_time }}"
-}
-{{ end }}
-```
-
-### **Key Configuration Points**
-
-#### **gMSA Requirements:**
-- gMSA must have `HTTP/vault.yourdomain.com` SPN
-- gMSA must be in the AD groups specified in `bound_group_sids`
-- gMSA must have permission to request Kerberos tickets
-
-#### **Vault Agent Configuration:**
-- Must run under the gMSA identity
-- Must have access to the keytab (if using file-based keytab)
-- Must be able to reach the Vault server
-
-#### **Network Requirements:**
-- Vault Agent must be able to reach the Vault server
-- Vault server must be able to reach the domain controller
-- Proper DNS resolution for Kerberos realm
-
-### **Benefits of This Approach**
-
-- **No Hardcoded Credentials**: gMSA provides automatic authentication
-- **Automatic Token Renewal**: Vault Agent handles token refresh
-- **Group-Based Access**: Access controlled by AD group membership
-- **Audit Trail**: All authentication events logged with security flags
-- **High Availability**: Works with Vault clustering
-- **Secure**: Uses Kerberos authentication with PAC validation
-
-### **Troubleshooting Tips**
-
-If authentication fails, check:
-- gMSA has correct SPN: `setspn -L DOMAIN\gmsa-account$`
-- gMSA is in required AD groups
-- Vault Agent is running under gMSA identity
-- Network connectivity to Vault server
-- Clock synchronization (Kerberos is time-sensitive)
-
-### **Production Considerations**
-
-- **Keytab Security**: Store keytab securely, rotate regularly
-- **Token TTL**: Set appropriate token lifetimes for your use case
-- **Monitoring**: Monitor authentication success/failure rates
-- **Backup**: Ensure gMSA has backup authentication methods
 
 ## Health & Monitoring
 
