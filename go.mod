@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/hashicorp/go-hclog v1.6.3
+	github.com/hashicorp/vault/api v1.16.0
 	github.com/hashicorp/vault/sdk v0.19.0
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 )
