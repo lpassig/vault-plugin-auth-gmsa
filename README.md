@@ -103,13 +103,116 @@ Invoke-RestMethod -Method POST -Uri "https://vault.example.com/v1/auth/gmsa/logi
 - CI tests with a real or mocked KDC.
 
 
-## Troubleshooting
-- `KRB_AP_ERR_SKEW`: Time skew; fix NTP.
-- `preauth failed` when minting tokens client-side: verify the gMSA is permitted on the node and SPN is correct.
-- `key not found` on server: regenerate/export keytab after SPN updates.
+## Configuration API
 
+Path: `auth/gmsa/config`
 
+Fields on write:
+- `realm` (string, required): Kerberos realm, uppercase (e.g., `EXAMPLE.COM`).
+- `kdcs` (string, required): Comma-separated KDCs, each `host` or `host:port`.
+- `keytab` (string, required): Base64-encoded keytab content for the service account (SPN).
+- `spn` (string, required): e.g., `HTTP/vault.example.com` or `HTTP/vault.example.com@EXAMPLE.COM` (service must be uppercase).
+- `allow_channel_binding` (bool): Enforce TLS channel binding (tls-server-end-point) if true.
+- `clock_skew_sec` (int): Allowed clock skew seconds (default 300).
+
+Examples:
+```bash
+base64 -w0 /etc/vault.d/krb5/vault.keytab > keytab.b64
+
+vault write auth/gmsa/config \
+  realm=EXAMPLE.COM \
+  kdcs="dc1.example.com,dc2.example.com:88" \
+  spn=HTTP/vault.example.com \
+  keytab=@keytab.b64 \
+  allow_channel_binding=true \
+  clock_skew_sec=300
+
+vault read auth/gmsa/config
+vault delete auth/gmsa/config
 ```
-Audit fields
-- request.client_principal
-- request.group_sids (if extracted)
+
+## Role Management API
+
+Paths:
+- `auth/gmsa/role/<name>` (write/read/delete)
+- `auth/gmsa/roles` (list)
+
+Role fields:
+- `name` (string, required)
+- `allowed_realms` (string): Comma-separated realms
+- `allowed_spns` (string): Comma-separated SPNs
+- `bound_group_sids` (string): Comma-separated AD group SIDs
+- `token_policies` (string): Comma-separated policy names
+- `token_type` (string): `default` or `service`
+- `period` (seconds): Periodic token renewal period
+- `max_ttl` (seconds): Maximum TTL
+- `deny_policies` (string): Comma-separated policies to remove
+- `merge_strategy` (string): `union` or `override` (default `union`)
+
+Example:
+```bash
+vault write auth/gmsa/role/app \
+  name=app \
+  allowed_realms=EXAMPLE.COM \
+  allowed_spns=HTTP/vault.example.com \
+  bound_group_sids=S-1-5-21-111-222-333-419 \
+  token_policies=default,kv-read \
+  token_type=service \
+  period=3600 \
+  max_ttl=7200 \
+  deny_policies=dev-only \
+  merge_strategy=union
+```
+
+## Login API
+
+Path: `auth/gmsa/login` (unauthenticated)
+
+Request fields:
+- `role` (string, required): Role to authorize against
+- `spnego` (string, required): Base64-encoded SPNEGO token
+- `cb_tlse` (string, optional): TLS channel binding value when enforced
+
+Response:
+- Vault token per role configuration. Metadata includes `principal`, `realm`, `role`, `spn`, `sids_count`.
+
+Windows example (PowerShell):
+```powershell
+$token = [Convert]::ToBase64String($spnegoBytes)
+Invoke-RestMethod -Method POST -Uri "https://vault.example.com/v1/auth/gmsa/login" `
+  -Body (@{ role = "app"; spnego = $token } | ConvertTo-Json)
+```
+
+## How it works
+1. Client obtains a service ticket for configured `spn` via SSPI.
+2. Client sends SPNEGO token to `auth/gmsa/login`.
+3. Plugin validates the ticket using the configured keytab and SPN; enforces optional TLS channel binding and clock skew.
+4. Role checks apply (allowed realms, SPNs, group SIDs intersection).
+5. Vault token is issued with policies and TTLs per role.
+
+## Security notes
+- PAC / group membership: Validate PAC if you rely on SIDs for strict authorization.
+- Channel binding: When enabled, supply `cb_tlse` from the TLS connection to mitigate MITM.
+- Time sync: Keep NTP healthy to avoid Kerberos skew errors.
+- mTLS: Use TLS (prefer mTLS) between clients and Vault.
+- Keytab hygiene: Protect keytabs at rest/in transit; rotate on SPN key changes.
+
+## Troubleshooting
+- `KRB_AP_ERR_SKEW`: Fix clock skew / NTP.
+- `invalid spnego encoding`: Ensure the `spnego` field is base64 of the raw SPNEGO blob.
+- `role "..." not found`: Create the role or correct the `role` value.
+- `realm not allowed for role` / `SPN not allowed for role`: Update role constraints or client config.
+- `no bound group SID matched`: Client lacks required AD group membership.
+- `auth method not configured`: Configure `auth/gmsa/config` first.
+
+Compatibility:
+- Build with Go 1.25+. If dependencies require `go1.25` build tags, ensure your toolchain is Go 1.25+.
+
+Development:
+```bash
+go version   # ensure go1.25+
+go mod tidy
+go build ./...
+```
+
+License: see `LICENSE`.

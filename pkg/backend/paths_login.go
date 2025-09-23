@@ -72,6 +72,7 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		SPN:          cfg.SPN,
 		ClockSkewSec: cfg.ClockSkewSec,
 		RequireCB:    cfg.AllowChannelBind,
+		KeytabB64:    cfg.KeytabB64,
 	})
 	res, kerr := v.ValidateSPNEGO(ctx, spnegoB64, cb)
 	if !kerr.IsZero() {
