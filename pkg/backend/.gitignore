@@ -1,0 +1,19 @@
+# Go
+*.test
+*.out
+*.log
+bin/
+dist/
+coverage.*
+
+# Vault plugin binary
+vault-plugin-auth-gmsa
+*.exe
+*.dll
+*.dylib
+*.so
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
