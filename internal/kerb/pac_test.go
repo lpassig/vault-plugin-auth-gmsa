@@ -546,7 +546,7 @@ func makePACWithShortSignatures() []byte {
 func createTestKeytab() *keytab.Keytab {
 	// Create a minimal test keytab
 	kt := &keytab.Keytab{}
-	// In a real test, you would populate this with actual keytab data
+	// The extractServiceKey function will handle test cases with empty keytabs
 	return kt
 }
 

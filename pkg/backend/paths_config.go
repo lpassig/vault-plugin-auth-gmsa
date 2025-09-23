@@ -19,6 +19,13 @@ func pathsConfig(b *gmsaBackend) []*framework.Path {
 				"spn":                   {Type: framework.TypeString, Required: true, Description: "Service Principal Name; e.g., HTTP/vault.domain"},
 				"allow_channel_binding": {Type: framework.TypeBool, Description: "Require TLS channel-binding (tls-server-end-point)."},
 				"clock_skew_sec":        {Type: framework.TypeInt, Description: "Allowed clock skew seconds (default 300)."},
+				// Normalization settings
+				"realm_case_sensitive": {Type: framework.TypeBool, Description: "Whether realm comparison should be case-sensitive (default false)."},
+				"spn_case_sensitive":   {Type: framework.TypeBool, Description: "Whether SPN comparison should be case-sensitive (default false)."},
+				"realm_suffixes":       {Type: framework.TypeString, Description: "Comma-separated realm suffixes to remove (e.g., .local,.lan)."},
+				"spn_suffixes":         {Type: framework.TypeString, Description: "Comma-separated SPN suffixes to remove (e.g., .local,.lan)."},
+				"realm_prefixes":       {Type: framework.TypeString, Description: "Comma-separated realm prefixes to remove."},
+				"spn_prefixes":         {Type: framework.TypeString, Description: "Comma-separated SPN prefixes to remove."},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
 				// Use Update for both create and update to avoid ExistenceCheck requirement
@@ -38,6 +45,14 @@ func (b *gmsaBackend) configWrite(ctx context.Context, req *logical.Request, d *
 		SPN:              d.Get("spn").(string),
 		AllowChannelBind: d.Get("allow_channel_binding").(bool),
 		ClockSkewSec:     intOrDefault(d.Get("clock_skew_sec"), 300),
+		Normalization: NormalizationConfig{
+			RealmCaseSensitive: d.Get("realm_case_sensitive").(bool),
+			SPNCaseSensitive:   d.Get("spn_case_sensitive").(bool),
+			RealmSuffixes:      csvToSlice(d.Get("realm_suffixes")),
+			SPNSuffixes:        csvToSlice(d.Get("spn_suffixes")),
+			RealmPrefixes:      csvToSlice(d.Get("realm_prefixes")),
+			SPNPrefixes:        csvToSlice(d.Get("spn_prefixes")),
+		},
 	}
 	if err := normalizeAndValidateConfig(&cfg); err != nil {
 		return logical.ErrorResponse(err.Error()), nil

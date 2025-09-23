@@ -79,12 +79,36 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		return logical.ErrorResponse(kerr.SafeMessage()), nil
 	}
 
-	// Authorization
-	if len(role.AllowedRealms) > 0 && !containsFold(role.AllowedRealms, res.Realm) {
-		return logical.ErrorResponse("realm not allowed for role"), nil
+	// Authorization with normalization
+	normalizedRealm := normalizeRealm(res.Realm, cfg.Normalization)
+	normalizedSPN := normalizeSPN(res.SPN, cfg.Normalization)
+
+	if len(role.AllowedRealms) > 0 {
+		allowed := false
+		for _, allowedRealm := range role.AllowedRealms {
+			normalizedAllowedRealm := normalizeRealm(allowedRealm, cfg.Normalization)
+			if normalizedAllowedRealm == normalizedRealm {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return logical.ErrorResponse("realm not allowed for role"), nil
+		}
 	}
-	if len(role.AllowedSPNs) > 0 && !containsFold(role.AllowedSPNs, res.SPN) {
-		return logical.ErrorResponse("SPN not allowed for role"), nil
+
+	if len(role.AllowedSPNs) > 0 {
+		allowed := false
+		for _, allowedSPN := range role.AllowedSPNs {
+			normalizedAllowedSPN := normalizeSPN(allowedSPN, cfg.Normalization)
+			if normalizedAllowedSPN == normalizedSPN {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return logical.ErrorResponse("SPN not allowed for role"), nil
+		}
 	}
 	if len(role.BoundGroupSIDs) > 0 && !intersects(role.BoundGroupSIDs, res.GroupSIDs) {
 		return logical.ErrorResponse("no bound group SID matched"), nil

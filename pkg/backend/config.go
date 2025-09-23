@@ -11,22 +11,38 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
-// Storage keys
+// Storage keys for persistent data in Vault's storage
 const (
-	storageKeyConfig = "config"
-	storageKeyRole   = "role/"
+	storageKeyConfig = "config" // Key for global configuration
+	storageKeyRole   = "role/"  // Prefix for role configurations
 )
 
-// Global config for the auth method.
+// Config represents the global configuration for the gMSA auth method
+// This configuration is shared across all authentication attempts
 type Config struct {
-	Realm            string   `json:"realm"`
-	KDCs             []string `json:"kdcs"`
-	KeytabB64        string   `json:"keytab"`
-	SPN              string   `json:"spn"`
-	AllowChannelBind bool     `json:"allow_channel_binding"`
-	ClockSkewSec     int      `json:"clock_skew_sec"`
+	Realm            string   `json:"realm"`                 // Kerberos realm (e.g., EXAMPLE.COM)
+	KDCs             []string `json:"kdcs"`                  // List of Key Distribution Centers
+	KeytabB64        string   `json:"keytab"`                // Base64-encoded keytab file
+	SPN              string   `json:"spn"`                   // Service Principal Name (e.g., HTTP/vault.example.com)
+	AllowChannelBind bool     `json:"allow_channel_binding"` // Enable TLS channel binding
+	ClockSkewSec     int      `json:"clock_skew_sec"`        // Allowed clock skew in seconds
+	// Normalization settings for flexible environment adaptation
+	Normalization NormalizationConfig `json:"normalization"`
 }
 
+// NormalizationConfig defines how realms and SPNs should be normalized
+// This allows for flexible matching across different environments (dev, staging, prod)
+type NormalizationConfig struct {
+	RealmCaseSensitive bool     `json:"realm_case_sensitive"` // Whether realm comparison is case-sensitive
+	SPNCaseSensitive   bool     `json:"spn_case_sensitive"`   // Whether SPN comparison is case-sensitive
+	RealmSuffixes      []string `json:"realm_suffixes"`       // Suffixes to remove from realms (e.g., .local, .lan)
+	SPNSuffixes        []string `json:"spn_suffixes"`         // Suffixes to remove from SPNs
+	RealmPrefixes      []string `json:"realm_prefixes"`       // Prefixes to remove from realms
+	SPNPrefixes        []string `json:"spn_prefixes"`         // Prefixes to remove from SPNs
+}
+
+// Safe returns a safe representation of the config for logging/auditing
+// Excludes sensitive data like keytab contents
 func (c *Config) Safe() map[string]any {
 	return map[string]any{
 		"realm":                 c.Realm,
@@ -34,6 +50,14 @@ func (c *Config) Safe() map[string]any {
 		"spn":                   c.SPN,
 		"allow_channel_binding": c.AllowChannelBind,
 		"clock_skew_sec":        c.ClockSkewSec,
+		"normalization": map[string]any{
+			"realm_case_sensitive": c.Normalization.RealmCaseSensitive,
+			"spn_case_sensitive":   c.Normalization.SPNCaseSensitive,
+			"realm_suffixes":       strings.Join(c.Normalization.RealmSuffixes, ","),
+			"spn_suffixes":         strings.Join(c.Normalization.SPNSuffixes, ","),
+			"realm_prefixes":       strings.Join(c.Normalization.RealmPrefixes, ","),
+			"spn_prefixes":         strings.Join(c.Normalization.SPNPrefixes, ","),
+		},
 	}
 }
 
@@ -119,6 +143,11 @@ func listRoles(ctx context.Context, s logical.Storage) ([]string, error) {
 // normalizeAndValidateConfig validates operator-provided configuration. It is
 // deliberately strict to reduce misconfiguration risk.
 func normalizeAndValidateConfig(c *Config) error {
+	// Initialize default normalization settings if not provided
+	if len(c.Normalization.RealmSuffixes) == 0 && len(c.Normalization.SPNSuffixes) == 0 &&
+		len(c.Normalization.RealmPrefixes) == 0 && len(c.Normalization.SPNPrefixes) == 0 {
+		c.Normalization = getDefaultNormalizationConfig()
+	}
 	// Validate realm: UPPERCASE, limited character set.
 	if c.Realm == "" || strings.ToUpper(c.Realm) != c.Realm {
 		return errors.New("realm must be UPPERCASE and non-empty")
@@ -210,9 +239,117 @@ func normalizeAndValidateConfig(c *Config) error {
 	return nil
 }
 
+// validateRole validates role configuration
 func validateRole(r *Role) error {
 	if r.Name == "" {
 		return errors.New("role name is required")
 	}
 	return nil
+}
+
+// Normalization functions for flexible environment adaptation
+
+// normalizeRealm normalizes a realm according to the configuration
+// This allows for flexible matching across different environments
+func normalizeRealm(realm string, config NormalizationConfig) string {
+	if realm == "" {
+		return realm
+	}
+
+	// Apply prefixes (remove configured prefixes)
+	for _, prefix := range config.RealmPrefixes {
+		if strings.HasPrefix(realm, prefix) {
+			realm = strings.TrimPrefix(realm, prefix)
+			break // Only apply the first matching prefix
+		}
+	}
+
+	// Apply suffixes (remove configured suffixes like .local, .lan)
+	for _, suffix := range config.RealmSuffixes {
+		if strings.HasSuffix(realm, suffix) {
+			realm = strings.TrimSuffix(realm, suffix)
+			break // Only apply the first matching suffix
+		}
+	}
+
+	// Apply case normalization
+	if !config.RealmCaseSensitive {
+		realm = strings.ToUpper(realm)
+	}
+
+	return realm
+}
+
+// normalizeSPN normalizes an SPN according to the configuration
+// Handles both service and hostname parts appropriately
+func normalizeSPN(spn string, config NormalizationConfig) string {
+	if spn == "" {
+		return spn
+	}
+
+	// Apply prefixes (remove configured prefixes)
+	for _, prefix := range config.SPNPrefixes {
+		if strings.HasPrefix(spn, prefix) {
+			spn = strings.TrimPrefix(spn, prefix)
+			break // Only apply the first matching prefix
+		}
+	}
+
+	// Apply suffixes (remove configured suffixes like .local, .lan)
+	for _, suffix := range config.SPNSuffixes {
+		if strings.HasSuffix(spn, suffix) {
+			spn = strings.TrimSuffix(spn, suffix)
+			break // Only apply the first matching suffix
+		}
+	}
+
+	// Apply case normalization (only to service part, preserve hostname case)
+	if !config.SPNCaseSensitive {
+		// Only normalize the service part, not the host part
+		if strings.Contains(spn, "/") {
+			parts := strings.SplitN(spn, "/", 2)
+			if len(parts) == 2 {
+				service := strings.ToUpper(parts[0])
+				host := parts[1]
+				spn = service + "/" + host
+			}
+		} else {
+			spn = strings.ToUpper(spn)
+		}
+	}
+
+	return spn
+}
+
+// normalizePrincipal normalizes a principal (user@realm) according to the configuration
+// Applies realm normalization to the realm part while preserving the user part
+func normalizePrincipal(principal string, config NormalizationConfig) string {
+	if principal == "" {
+		return principal
+	}
+
+	// Split principal into user and realm parts
+	if strings.Contains(principal, "@") {
+		parts := strings.SplitN(principal, "@", 2)
+		if len(parts) == 2 {
+			user := parts[0]
+			realm := normalizeRealm(parts[1], config)
+			return user + "@" + realm
+		}
+	}
+
+	return principal
+}
+
+// getDefaultNormalizationConfig returns default normalization settings
+// These defaults provide sensible behavior for most environments
+func getDefaultNormalizationConfig() NormalizationConfig {
+	return NormalizationConfig{
+		RealmCaseSensitive: false,                      // Default to case-insensitive for realms
+		SPNCaseSensitive:   false,                      // Default to case-insensitive for SPNs
+		RealmSuffixes:      []string{".local", ".lan"}, // Common development suffixes
+		SPNSuffixes:        []string{".local", ".lan"}, // Common development suffixes
+		RealmPrefixes:      []string{},                 // No default prefixes
+		SPNPrefixes:        []string{},                 // No default prefixes
+	}
 }
