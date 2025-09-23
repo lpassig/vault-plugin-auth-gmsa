@@ -5,9 +5,31 @@ echo "=== GMSA Auth Plugin Setup ==="
 # Set Vault environment
 export VAULT_ADDR=http://127.0.0.1:8200
 
+# Cleanup function
+cleanup() {
+    echo
+    echo "Cleaning up..."
+    if [ ! -z "$VAULT_PID" ]; then
+        echo "Stopping Vault (PID: $VAULT_PID)..."
+        kill $VAULT_PID 2>/dev/null || true
+    fi
+    echo "Cleanup complete."
+}
+
+# Set trap to cleanup on script exit
+trap cleanup EXIT
+
 echo "1. Stopping any existing Vault processes..."
 pkill vault 2>/dev/null || true
 sleep 3
+
+# Clean up any existing plugin registrations (only if Vault is running)
+echo "Cleaning up existing plugin registrations..."
+if vault status >/dev/null 2>&1; then
+    vault plugin deregister auth vault-plugin-auth-gmsa 2>/dev/null || true
+else
+    echo "Vault not running, skipping plugin cleanup"
+fi
 
 echo "2. Building the plugin..."
 make build
@@ -37,13 +59,31 @@ if ! curl -s http://127.0.0.1:8200/v1/sys/seal-status >/dev/null 2>&1; then
 fi
 
 echo "5. Initializing Vault..."
-INIT_OUTPUT=$(vault operator init -key-shares=1 -key-threshold=1)
-UNSEAL_KEY=$(echo "$INIT_OUTPUT" | grep "Unseal Key 1:" | awk '{print $4}')
-ROOT_TOKEN=$(echo "$INIT_OUTPUT" | grep "Initial Root Token:" | awk '{print $4}')
-export VAULT_TOKEN=$ROOT_TOKEN
-
-echo "6. Unsealing Vault..."
-vault operator unseal $UNSEAL_KEY
+if vault status | grep -q "Initialized.*false"; then
+    echo "Vault not initialized, initializing..."
+    INIT_OUTPUT=$(vault operator init -key-shares=1 -key-threshold=1)
+    UNSEAL_KEY=$(echo "$INIT_OUTPUT" | grep "Unseal Key 1:" | awk '{print $4}')
+    ROOT_TOKEN=$(echo "$INIT_OUTPUT" | grep "Initial Root Token:" | awk '{print $4}')
+    export VAULT_TOKEN=$ROOT_TOKEN
+    
+    echo "6. Unsealing Vault..."
+    vault operator unseal $UNSEAL_KEY
+else
+    echo "Vault already initialized, checking if unsealed..."
+    if vault status | grep -q "Sealed.*true"; then
+        echo "Vault is sealed, please unseal manually or restart with fresh data"
+        echo "You can unseal with: vault operator unseal <unseal-key>"
+        exit 1
+    else
+        echo "Vault is already unsealed, using existing token..."
+        # Try to use root token if available, otherwise prompt for token
+        if [ -z "$VAULT_TOKEN" ]; then
+            echo "Please set VAULT_TOKEN environment variable or authenticate manually"
+            echo "Example: export VAULT_TOKEN=<your-root-token>"
+            exit 1
+        fi
+    fi
+fi
 
 echo "7. Checking Vault status..."
 vault status
@@ -114,12 +154,16 @@ echo "   • Verified all functionality works correctly"
 echo
 echo "🎯 Your original command now works:"
 echo "   export VAULT_ADDR=http://127.0.0.1:8200"
-echo "   export VAULT_TOKEN=$ROOT_TOKEN"
+if [ ! -z "$ROOT_TOKEN" ]; then
+    echo "   export VAULT_TOKEN=$ROOT_TOKEN"
+else
+    echo "   export VAULT_TOKEN=<your-root-token>"
+fi
 echo "   vault write auth/gmsa/config \\"
 echo "     realm=EXAMPLE.COM \\"
 echo "     kdcs=\"dc1.example.com,dc2.example.com\" \\"
 echo "     spn=\"HTTP/vault.example.com\" \\"
 echo "     keytab=@/tmp/test-keytab.b64"
 echo
-echo "🛑 To stop Vault, run: kill $VAULT_PID"
-echo "🧹 To clean up, run: rm -rf /private/tmp/vault-plugins /tmp/test-keytab.b64"
+echo "🛑 Vault will be automatically stopped when this script exits"
+echo "🧹 To clean up files, run: rm -rf /private/tmp/vault-plugins /tmp/test-keytab.b64"
