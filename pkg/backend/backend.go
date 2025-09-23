@@ -9,7 +9,7 @@ import (
 )
 
 // Plugin version constant for tracking and compatibility
-const pluginVersion = "0.1.0"
+const pluginVersion = "v0.1.0"
 
 // gmsaBackend represents the main backend structure for the gMSA auth method
 // It embeds Vault's framework.Backend and adds storage and time functionality
