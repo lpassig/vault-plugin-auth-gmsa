@@ -7,18 +7,16 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
-const configPath = "config"
-
 func pathsConfig(b *gmsaBackend) []*framework.Path {
 	return []*framework.Path{
 		{
-			Pattern:      configPath,
+			Pattern:      "config",
 			HelpSynopsis: "Configure global gMSA/Kerberos settings (KDCs, realm, keytab, channel binding).",
 			Fields: map[string]*framework.FieldSchema{
-				"realm":                 {Type: framework.TypeString, Description: "Kerberos realm (UPPERCASE).", Required: true},
-				"kdcs":                  {Type: framework.TypeCommaStringSlice, Description: "Comma-separated KDC hostnames or host:port.", Required: true},
-				"keytab":                {Type: framework.TypeString, Description: "Base64-encoded keytab for the service account (gMSA).", Required: true},
-				"spn":                   {Type: framework.TypeString, Description: "Service Principal Name (e.g., HTTP/myservice.domain).", Required: true},
+				"realm":                 {Type: framework.TypeString, Required: true, Description: "Kerberos realm (UPPERCASE)."},
+				"kdcs":                  {Type: framework.TypeString, Required: true, Description: "Comma-separated KDCs (host or host:port)."},
+				"keytab":                {Type: framework.TypeString, Required: true, Description: "Base64-encoded keytab for the service account (gMSA)."},
+				"spn":                   {Type: framework.TypeString, Required: true, Description: "Service Principal Name; e.g., HTTP/vault.domain"},
 				"allow_channel_binding": {Type: framework.TypeBool, Description: "Require TLS channel-binding (tls-server-end-point)."},
 				"clock_skew_sec":        {Type: framework.TypeInt, Description: "Allowed clock skew seconds (default 300)."},
 			},
@@ -33,26 +31,25 @@ func pathsConfig(b *gmsaBackend) []*framework.Path {
 }
 
 func (b *gmsaBackend) configWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-	cfg := internal.Config{
+	cfg := Config{
 		Realm:            d.Get("realm").(string),
-		KDCs:             framework.ConvertCommaStringSlice(d.Get("kdcs")),
+		KDCs:             csvToSlice(d.Get("kdcs")),
 		KeytabB64:        d.Get("keytab").(string),
 		SPN:              d.Get("spn").(string),
 		AllowChannelBind: d.Get("allow_channel_binding").(bool),
-		ClockSkewSec:     internal.IntOrDefault(d.Get("clock_skew_sec"), 300),
+		ClockSkewSec:     intOrDefault(d.Get("clock_skew_sec"), 300),
 	}
-
-	if err := internal.NormalizeAndValidateConfig(&cfg); err != nil {
+	if err := normalizeAndValidateConfig(&cfg); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
-	if err := internal.WriteConfig(ctx, b.storage, &cfg); err != nil {
+	if err := writeConfig(ctx, b.storage, &cfg); err != nil {
 		return nil, err
 	}
 	return &logical.Response{Data: cfg.Safe()}, nil
 }
 
 func (b *gmsaBackend) configRead(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
-	cfg, err := internal.ReadConfig(ctx, b.storage)
+	cfg, err := readConfig(ctx, b.storage)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +60,7 @@ func (b *gmsaBackend) configRead(ctx context.Context, req *logical.Request, _ *f
 }
 
 func (b *gmsaBackend) configDelete(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
-	if err := b.storage.Delete(ctx, internal.StoragePathConfig); err != nil {
+	if err := b.storage.Delete(ctx, storageKeyConfig); err != nil {
 		return nil, err
 	}
 	return &logical.Response{}, nil

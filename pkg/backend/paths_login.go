@@ -6,8 +6,8 @@ import (
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
-	"github.com/lpassig/vault-plugin-auth-gmsa/internal"
-	"github.com/lpassig/vault-plugin-auth-gmsa/internal/kerb"
+
+	"github.com/lpassig/vault-plugin-auth-gmsa/pkg/backend/internals/kerb"
 )
 
 func pathsLogin(b *gmsaBackend) []*framework.Path {
@@ -33,7 +33,7 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 	spnegoB64 := d.Get("spnego").(string)
 	cb := d.Get("cb_tlse").(string)
 
-	role, err := internal.ReadRole(ctx, b.storage, roleName)
+	role, err := readRole(ctx, b.storage, roleName)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		return logical.ErrorResponse(fmt.Sprintf("role %q not found", roleName)), nil
 	}
 
-	cfg, err := internal.ReadConfig(ctx, b.storage)
+	cfg, err := readConfig(ctx, b.storage)
 	if err != nil {
 		return nil, err
 	}
@@ -49,8 +49,10 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		return logical.ErrorResponse("auth method not configured"), nil
 	}
 
-	// Kerberos validation
-	v := kerb.NewValidator(*cfg, kerb.Options{
+	// Kerberos validation stub (wire real logic in internals/kerb/validator.go)
+	v := kerb.NewValidator(kerb.Options{
+		Realm:        cfg.Realm,
+		SPN:          cfg.SPN,
 		ClockSkewSec: cfg.ClockSkewSec,
 		RequireCB:    cfg.AllowChannelBind,
 	})
@@ -60,12 +62,31 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 	}
 
 	// Authorization
-	if err := internal.Authorize(*role, *cfg, res); err != nil {
-		return logical.ErrorResponse(err.Error()), nil
+	if len(role.AllowedRealms) > 0 && !containsFold(role.AllowedRealms, res.Realm) {
+		return logical.ErrorResponse("realm not allowed for role"), nil
+	}
+	if len(role.AllowedSPNs) > 0 && !containsFold(role.AllowedSPNs, res.SPN) {
+		return logical.ErrorResponse("SPN not allowed for role"), nil
+	}
+	if len(role.BoundGroupSIDs) > 0 && !intersects(role.BoundGroupSIDs, res.GroupSIDs) {
+		return logical.ErrorResponse("no bound group SID matched"), nil
 	}
 
 	// Build token policies (merge/deny logic)
-	policies := internal.ResolvePolicies(*role, res)
+	policies := unique(role.TokenPolicies)
+	if len(role.DenyPolicies) > 0 {
+		tmp := make([]string, 0, len(policies))
+		deny := map[string]struct{}{}
+		for _, p := range role.DenyPolicies {
+			deny[p] = struct{}{}
+		}
+		for _, p := range policies {
+			if _, drop := deny[p]; !drop {
+				tmp = append(tmp, p)
+			}
+		}
+		policies = tmp
+	}
 
 	meta := map[string]string{
 		"principal":  res.Principal,

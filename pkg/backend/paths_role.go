@@ -6,7 +6,6 @@ import (
 
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
-	"github.com/lpassig/vault-plugin-auth-gmsa/internal"
 )
 
 func pathsRole(b *gmsaBackend) []*framework.Path {
@@ -16,14 +15,14 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 			HelpSynopsis: "Create or manage a role that maps principals/groups to policies and constraints.",
 			Fields: map[string]*framework.FieldSchema{
 				"name":             {Type: framework.TypeString, Required: true, Description: "Role name."},
-				"allowed_realms":   {Type: framework.TypeCommaStringSlice, Description: "Allowed realms for this role."},
-				"allowed_spns":     {Type: framework.TypeCommaStringSlice, Description: "Allowed service SPNs."},
-				"bound_group_sids": {Type: framework.TypeCommaStringSlice, Description: "Allowed AD group SIDs for this role."},
-				"token_policies":   {Type: framework.TypeCommaStringSlice, Description: "Default token policies."},
+				"allowed_realms":   {Type: framework.TypeString, Description: "Comma-separated allowed realms."},
+				"allowed_spns":     {Type: framework.TypeString, Description: "Comma-separated allowed SPNs."},
+				"bound_group_sids": {Type: framework.TypeString, Description: "Comma-separated allowed AD group SIDs."},
+				"token_policies":   {Type: framework.TypeString, Description: "Comma-separated default token policies."},
 				"token_type":       {Type: framework.TypeString, Description: "default or service"},
 				"period":           {Type: framework.TypeDurationSecond, Description: "Periodic token period seconds."},
 				"max_ttl":          {Type: framework.TypeDurationSecond, Description: "Max TTL seconds."},
-				"deny_policies":    {Type: framework.TypeCommaStringSlice, Description: "Policies to deny (cap ceiling)."},
+				"deny_policies":    {Type: framework.TypeString, Description: "Comma-separated policies to deny (cap ceiling)."},
 				"merge_strategy":   {Type: framework.TypeString, Description: "union or override (default union)."},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -45,26 +44,22 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 
 func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
-	if name == "" {
-		return logical.ErrorResponse("missing role name"), nil
-	}
-
-	role := internal.Role{
+	role := Role{
 		Name:           name,
-		AllowedRealms:  framework.ConvertCommaStringSlice(d.Get("allowed_realms")),
-		AllowedSPNs:    framework.ConvertCommaStringSlice(d.Get("allowed_spns")),
-		BoundGroupSIDs: framework.ConvertCommaStringSlice(d.Get("bound_group_sids")),
-		TokenPolicies:  framework.ConvertCommaStringSlice(d.Get("token_policies")),
-		TokenType:      internal.TokenTypeOrDefault(d.Get("token_type")),
-		Period:         internal.IntOrDefault(d.Get("period"), 0),
-		MaxTTL:         internal.IntOrDefault(d.Get("max_ttl"), 0),
-		DenyPolicies:   framework.ConvertCommaStringSlice(d.Get("deny_policies")),
-		MergeStrategy:  internal.MergeStrategyOrDefault(d.Get("merge_strategy")),
+		AllowedRealms:  csvToSlice(d.Get("allowed_realms")),
+		AllowedSPNs:    csvToSlice(d.Get("allowed_spns")),
+		BoundGroupSIDs: csvToSlice(d.Get("bound_group_sids")),
+		TokenPolicies:  csvToSlice(d.Get("token_policies")),
+		TokenType:      tokenTypeOrDefault(d.Get("token_type")),
+		Period:         intOrDefault(d.Get("period"), 0),
+		MaxTTL:         intOrDefault(d.Get("max_ttl"), 0),
+		DenyPolicies:   csvToSlice(d.Get("deny_policies")),
+		MergeStrategy:  mergeStrategyOrDefault(d.Get("merge_strategy")),
 	}
-	if err := internal.ValidateRole(&role); err != nil {
+	if err := validateRole(&role); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
-	if err := internal.WriteRole(ctx, b.storage, &role); err != nil {
+	if err := writeRole(ctx, b.storage, &role); err != nil {
 		return nil, err
 	}
 	return &logical.Response{Data: role.Safe()}, nil
@@ -72,7 +67,7 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 
 func (b *gmsaBackend) roleRead(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
-	role, err := internal.ReadRole(ctx, b.storage, name)
+	role, err := readRole(ctx, b.storage, name)
 	if err != nil {
 		return nil, err
 	}
@@ -84,14 +79,14 @@ func (b *gmsaBackend) roleRead(ctx context.Context, req *logical.Request, d *fra
 
 func (b *gmsaBackend) roleDelete(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
-	if err := internal.DeleteRole(ctx, b.storage, name); err != nil {
+	if err := deleteRole(ctx, b.storage, name); err != nil {
 		return nil, err
 	}
 	return &logical.Response{}, nil
 }
 
 func (b *gmsaBackend) roleList(ctx context.Context, req *logical.Request, _ *framework.FieldData) (*logical.Response, error) {
-	keys, err := internal.ListRoles(ctx, b.storage)
+	keys, err := listRoles(ctx, b.storage)
 	if err != nil {
 		return nil, err
 	}

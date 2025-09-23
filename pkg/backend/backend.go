@@ -17,25 +17,21 @@ type gmsaBackend struct {
 }
 
 func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend, error) {
-	b := &gmsaBackend{
-		now: time.Now,
-	}
+	b := &gmsaBackend{now: time.Now}
 
 	b.Backend = &framework.Backend{
 		Help:        "Authenticate Windows workloads via gMSA (Kerberos/Negotiate) and map to Vault tokens.",
 		BackendType: logical.TypeCredential,
 		PathsSpecial: &logical.Paths{
-			Unauthenticated: []string{
-				"login",
-			},
+			Unauthenticated: []string{"login"},
 		},
 		Paths: framework.PathAppend(
 			pathsConfig(b),
 			pathsRole(b),
 			pathsLogin(b),
 		),
-		Secrets:        []*framework.Secret{}, // no leasing secrets here
-		AuthRenew:      b.authRenew,
+		// Let Vault core handle renewals via Auth.Period/TTL.
+		AuthRenew:      nil,
 		RunningVersion: pluginVersion,
 	}
 
@@ -44,18 +40,4 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 	}
 	b.storage = conf.StorageView
 	return b, nil
-}
-
-// authRenew keeps standard token semantics (periodic tokens ok)
-func (b *gmsaBackend) authRenew(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-	// Optional: add realm/SPN freshness checks or deny renew if role disallows.
-	return framework.LeaseExtend(0, 0, req.Secret, req.Data)
-}
-b.Backend = &framework.Backend{
-  Help:        "Authenticate Windows workloads via gMSA (Kerberos/Negotiate).",
-  BackendType: logical.TypeCredential,
-  PathsSpecial: &logical.Paths{Unauthenticated: []string{"login"}},
-  Paths: framework.PathAppend(pathsConfig(b), pathsRole(b), pathsLogin(b)),
-  AuthRenew:      nil,            // let Vault core handle period renewals
-  RunningVersion: pluginVersion,
 }
