@@ -129,9 +129,24 @@ type PACValidationResult struct {
 // This is the main PAC validation function that performs comprehensive validation
 // including signature verification, clock skew checking, and UPN consistency validation
 func ExtractGroupSIDsFromPAC(pacData []byte, keytab *keytab.Keytab, spn string, realm string, clockSkewSec int) (*PACValidationResult, error) {
-	// Basic size validation
+	// Security: Enhanced input validation
+	if len(pacData) == 0 {
+		return nil, fmt.Errorf("%w: PAC data is empty", ErrPACInvalidFormat)
+	}
 	if len(pacData) < 8 {
 		return nil, fmt.Errorf("%w: PAC too small", ErrPACInvalidFormat)
+	}
+	if len(pacData) > 64*1024 { // 64KB limit to prevent memory exhaustion
+		return nil, fmt.Errorf("%w: PAC data too large", ErrPACInvalidFormat)
+	}
+	if keytab == nil {
+		return nil, fmt.Errorf("%w: keytab is required", ErrPACInvalidFormat)
+	}
+	if spn == "" {
+		return nil, fmt.Errorf("%w: SPN is required", ErrPACInvalidFormat)
+	}
+	if realm == "" {
+		return nil, fmt.Errorf("%w: realm is required", ErrPACInvalidFormat)
 	}
 
 	// Initialize result structure

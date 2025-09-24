@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"expvar"
 	"runtime"
 	"time"
 
@@ -12,6 +13,17 @@ import (
 
 // Plugin version constant for tracking and compatibility
 const pluginVersion = "v0.1.0"
+
+// Metrics for observability
+var (
+	authAttempts            = expvar.NewInt("auth_attempts")
+	authSuccesses           = expvar.NewInt("auth_successes")
+	authFailures            = expvar.NewInt("auth_failures")
+	authLatency             = expvar.NewFloat("auth_latency_ms")
+	pacValidations          = expvar.NewInt("pac_validations")
+	pacValidationFailures   = expvar.NewInt("pac_validation_failures")
+	inputValidationFailures = expvar.NewInt("input_validation_failures")
+)
 
 // PluginMetadata contains comprehensive plugin information
 type PluginMetadata struct {
@@ -95,7 +107,8 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 			pathsConfig(b),   // Configuration management
 			pathsRole(b),     // Role management
 			pathsLogin(b),    // Authentication endpoint
-			pathsHealth(b),   // Health and metrics endpoints
+			pathsHealth(b),   // Health endpoints
+			pathsMetrics(b),  // Metrics endpoints
 			pathsRotation(b), // Password rotation endpoints
 		),
 		// Let Vault core handle renewals via Auth.Period/TTL

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
@@ -31,6 +32,13 @@ func pathsLogin(b *gmsaBackend) []*framework.Path {
 }
 
 func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	// Track authentication attempt
+	authAttempts.Add(1)
+	startTime := time.Now()
+	defer func() {
+		authLatency.Set(float64(time.Since(startTime).Milliseconds()))
+	}()
+
 	// Defensive timeout to avoid long-running Kerberos work under request context
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -39,21 +47,17 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 	spnegoB64 := d.Get("spnego").(string)
 	cb := d.Get("cb_tlse").(string)
 
-	// Input size limits to reduce memory DoS risk
-	if len(spnegoB64) == 0 || len(spnegoB64) > 64*1024 {
-		return logical.ErrorResponse("spnego token size invalid"), nil
-	}
-	if len(cb) > 4096 {
-		return logical.ErrorResponse("channel binding too large"), nil
-	}
-	// Quick validation of base64 format before deeper processing
-	if _, err := base64.StdEncoding.DecodeString(spnegoB64); err != nil {
-		return logical.ErrorResponse("invalid spnego encoding"), nil
+	// Enhanced input validation
+	if err := b.validateLoginInput(roleName, spnegoB64, cb); err != nil {
+		inputValidationFailures.Add(1)
+		authFailures.Add(1)
+		b.logger.Warn("invalid login input", "error", err, "client_ip", req.Connection.RemoteAddr)
+		return logical.ErrorResponse(err.Error()), nil
 	}
 
 	role, err := readRole(ctx, b.storage, roleName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read role: %w", err)
 	}
 	if role == nil {
 		return logical.ErrorResponse(fmt.Sprintf("role %q not found", roleName)), nil
@@ -61,7 +65,7 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 
 	cfg, err := readConfig(ctx, b.storage)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read config: %w", err)
 	}
 	if cfg == nil {
 		return logical.ErrorResponse("auth method not configured"), nil
@@ -76,6 +80,7 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 	})
 	res, kerr := v.ValidateSPNEGO(ctx, spnegoB64, cb)
 	if !kerr.IsZero() {
+		authFailures.Add(1)
 		return logical.ErrorResponse(kerr.SafeMessage()), nil
 	}
 
@@ -111,6 +116,7 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 		}
 	}
 	if len(role.BoundGroupSIDs) > 0 && !intersects(role.BoundGroupSIDs, res.GroupSIDs) {
+		authFailures.Add(1)
 		return logical.ErrorResponse("no bound group SID matched"), nil
 	}
 
@@ -175,5 +181,53 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 	if role.MaxTTL > 0 {
 		resp.Auth.TTL = time.Duration(role.MaxTTL) * time.Second
 	}
+
+	// Track successful authentication
+	authSuccesses.Add(1)
 	return resp, nil
+}
+
+// validateLoginInput performs comprehensive input validation
+func (b *gmsaBackend) validateLoginInput(roleName, spnegoB64, cb string) error {
+	// Validate role name
+	if roleName == "" {
+		return fmt.Errorf("role name is required")
+	}
+	if len(roleName) > 255 {
+		return fmt.Errorf("role name too long")
+	}
+	if !isValidRoleName(roleName) {
+		return fmt.Errorf("invalid role name format")
+	}
+
+	// Validate SPNEGO token
+	if spnegoB64 == "" {
+		return fmt.Errorf("spnego token is required")
+	}
+	if len(spnegoB64) > 64*1024 {
+		return fmt.Errorf("spnego token too large")
+	}
+	if !isValidBase64(spnegoB64) {
+		return fmt.Errorf("invalid spnego token encoding")
+	}
+
+	// Validate channel binding
+	if cb != "" && len(cb) > 4096 {
+		return fmt.Errorf("channel binding too large")
+	}
+
+	return nil
+}
+
+// isValidRoleName validates role name format
+func isValidRoleName(name string) bool {
+	// Role names should be alphanumeric with hyphens and underscores
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]+$`, name)
+	return matched
+}
+
+// isValidBase64 validates base64 encoding
+func isValidBase64(s string) bool {
+	_, err := base64.StdEncoding.DecodeString(s)
+	return err == nil
 }

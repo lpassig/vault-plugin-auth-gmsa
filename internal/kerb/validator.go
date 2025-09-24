@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 
 	"github.com/jcmturner/goidentity/v6"
 	"github.com/jcmturner/gokrb5/v8/credentials"
@@ -50,6 +51,40 @@ func NewValidator(opt Options) *Validator {
 	return &Validator{opt: opt}
 }
 
+// AuthError represents structured authentication errors
+type AuthError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Cause   error  `json:"-"`
+}
+
+func (e *AuthError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %s (caused by: %v)", e.Code, e.Message, e.Cause)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
+func (e *AuthError) Unwrap() error { return e.Cause }
+
+// Common error codes
+const (
+	ErrCodeInvalidSPNEGO      = "INVALID_SPNEGO_TOKEN"
+	ErrCodeMissingChannelBind = "MISSING_CHANNEL_BINDING"
+	ErrCodeInvalidKeytab      = "INVALID_KEYTAB"
+	ErrCodeKerberosFailed     = "KERBEROS_NEGOTIATION_FAILED"
+	ErrCodePACValidation      = "PAC_VALIDATION_FAILED"
+	ErrCodeClockSkew          = "CLOCK_SKEW_EXCEEDED"
+	ErrCodeInvalidInput       = "INVALID_INPUT"
+	ErrCodeRoleNotFound       = "ROLE_NOT_FOUND"
+	ErrCodeConfigNotFound     = "CONFIG_NOT_FOUND"
+)
+
+// newAuthError creates a structured authentication error
+func newAuthError(code, message string, cause error) *AuthError {
+	return &AuthError{Code: code, Message: message, Cause: cause}
+}
+
 // safeErr wraps errors to provide safe error messages for logging
 // This prevents sensitive information from being exposed in logs
 type safeErr struct {
@@ -71,22 +106,22 @@ func (v *Validator) ValidateSPNEGO(ctx context.Context, spnegoB64, channelBind s
 	// Basic input validation
 	spnegoBytes, err := base64.StdEncoding.DecodeString(spnegoB64)
 	if err != nil {
-		return nil, fail(err, "invalid spnego encoding")
+		return nil, fail(newAuthError(ErrCodeInvalidSPNEGO, "invalid spnego encoding", err), "invalid spnego encoding")
 	}
 
 	// Validate channel binding requirement
 	if v.opt.RequireCB && channelBind == "" {
-		return nil, fail(errors.New("missing channel binding"), "channel binding required but missing")
+		return nil, fail(newAuthError(ErrCodeMissingChannelBind, "channel binding required but missing", nil), "channel binding required but missing")
 	}
 
 	// Load keytab from base64 encoding
 	ktRaw, err := base64.StdEncoding.DecodeString(v.opt.KeytabB64)
 	if err != nil {
-		return nil, fail(err, "invalid keytab encoding")
+		return nil, fail(newAuthError(ErrCodeInvalidKeytab, "invalid keytab encoding", err), "invalid keytab encoding")
 	}
 	kt := &keytab.Keytab{}
 	if err := kt.Unmarshal(ktRaw); err != nil {
-		return nil, fail(err, "failed to parse keytab")
+		return nil, fail(newAuthError(ErrCodeInvalidKeytab, "failed to parse keytab", err), "failed to parse keytab")
 	}
 
 	// Create SPNEGO service using the loaded keytab
@@ -95,13 +130,13 @@ func (v *Validator) ValidateSPNEGO(ctx context.Context, spnegoB64, channelBind s
 	// Parse and validate the SPNEGO token
 	var token spnego.SPNEGOToken
 	if err := token.Unmarshal(spnegoBytes); err != nil {
-		return nil, fail(err, "spnego token unmarshal failed")
+		return nil, fail(newAuthError(ErrCodeInvalidSPNEGO, "spnego token unmarshal failed", err), "spnego token unmarshal failed")
 	}
 
 	// Accept the security context (this performs Kerberos validation)
 	ok, spnegoCtx, status := service.AcceptSecContext(&token)
 	if !ok {
-		return nil, fail(status, "kerberos negotiation failed")
+		return nil, fail(newAuthError(ErrCodeKerberosFailed, "kerberos negotiation failed", status), "kerberos negotiation failed")
 	}
 
 	// Extract identity from context
