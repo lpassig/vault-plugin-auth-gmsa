@@ -14,7 +14,7 @@ import (
 // Storage keys for persistent data in Vault's storage
 const (
 	storageKeyConfig = "config" // Key for global configuration
-	storageKeyRole   = "role/"  // Prefix for role configurations
+	storageKeyRole   = "role"   // Prefix for role configurations
 )
 
 // Config represents the global configuration for the gMSA auth method
@@ -111,7 +111,7 @@ func (r *Role) Safe() map[string]any {
 }
 
 func writeRole(ctx context.Context, s logical.Storage, role *Role) error {
-	entry, err := logical.StorageEntryJSON(storageKeyRole+role.Name, role)
+	entry, err := logical.StorageEntryJSON(storageKeyRole+"/"+role.Name, role)
 	if err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func writeRole(ctx context.Context, s logical.Storage, role *Role) error {
 }
 
 func readRole(ctx context.Context, s logical.Storage, name string) (*Role, error) {
-	entry, err := s.Get(ctx, storageKeyRole+name)
+	entry, err := s.Get(ctx, storageKeyRole+"/"+name)
 	if err != nil || entry == nil {
 		return nil, err
 	}
@@ -131,11 +131,15 @@ func readRole(ctx context.Context, s logical.Storage, name string) (*Role, error
 }
 
 func deleteRole(ctx context.Context, s logical.Storage, name string) error {
-	return s.Delete(ctx, storageKeyRole+name)
+	return s.Delete(ctx, storageKeyRole+"/"+name)
 }
 
 func listRoles(ctx context.Context, s logical.Storage) ([]string, error) {
-	return s.List(ctx, storageKeyRole)
+	keys, err := s.List(ctx, storageKeyRole+"/")
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // Validation helpers
@@ -170,6 +174,7 @@ func normalizeAndValidateConfig(c *Config) error {
 	hostRe := regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
 	uniqueKDC := map[string]struct{}{}
 	normalizedKDCs := make([]string, 0, len(c.KDCs))
+	realmLower := strings.ToLower(c.Realm)
 	for _, raw := range c.KDCs {
 		k := strings.TrimSpace(raw)
 		if k == "" {
@@ -192,6 +197,15 @@ func normalizeAndValidateConfig(c *Config) error {
 		if !hostRe.MatchString(host) {
 			return errors.New("kdcs host contains invalid characters")
 		}
+		
+		// Security check: KDC should be related to the realm domain
+		hostLower := strings.ToLower(host)
+		if !strings.Contains(hostLower, strings.ToLower(realmLower)) && 
+		   !strings.HasSuffix(hostLower, "."+realmLower) &&
+		   !strings.Contains(realmLower, hostLower) {
+			return errors.New("KDC host must be related to the realm domain for security")
+		}
+		
 		if _, seen := uniqueKDC[k]; seen {
 			continue
 		}
@@ -250,7 +264,7 @@ func validateRole(r *Role) error {
 	if r.Name == "" {
 		return errors.New("role name is required")
 	}
-	
+
 	// Validate SID format if provided
 	for _, sid := range r.BoundGroupSIDs {
 		if sid == "" {
@@ -260,20 +274,20 @@ func validateRole(r *Role) error {
 			return errors.New("invalid SID format: " + sid)
 		}
 	}
-	
+
 	// Validate policy names to prevent injection
 	for _, policy := range r.TokenPolicies {
 		if !isValidPolicyName(policy) {
 			return errors.New("invalid policy name: " + policy)
 		}
 	}
-	
+
 	for _, policy := range r.DenyPolicies {
 		if !isValidPolicyName(policy) {
 			return errors.New("invalid deny policy name: " + policy)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -284,13 +298,13 @@ func isValidSID(sid string) bool {
 	if !strings.HasPrefix(sid, "S-1-") {
 		return false
 	}
-	
+
 	// Remove S-1- prefix and validate remaining parts
 	parts := strings.Split(sid[4:], "-")
 	if len(parts) < 2 {
 		return false
 	}
-	
+
 	// Each part should be numeric
 	for _, part := range parts {
 		if part == "" {
@@ -302,7 +316,7 @@ func isValidSID(sid string) bool {
 			}
 		}
 	}
-	
+
 	return true
 }
 
@@ -311,7 +325,7 @@ func isValidPolicyName(policy string) bool {
 	if policy == "" {
 		return false
 	}
-	
+
 	// Policy names should only contain alphanumeric characters, hyphens, and underscores
 	policyRe := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	return policyRe.MatchString(policy)

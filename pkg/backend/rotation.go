@@ -99,7 +99,7 @@ func isValidCommand(cmd string) bool {
 	if cmd == "" {
 		return false
 	}
-	
+
 	// Commands should only contain alphanumeric characters, hyphens, underscores, and dots
 	cmdRe := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 	return cmdRe.MatchString(cmd)

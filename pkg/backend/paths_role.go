@@ -32,13 +32,7 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 				logical.UpdateOperation: &framework.PathOperation{Callback: b.roleWrite},
 				logical.ReadOperation:   &framework.PathOperation{Callback: b.roleRead},
 				logical.DeleteOperation: &framework.PathOperation{Callback: b.roleDelete},
-			},
-		},
-		{
-			Pattern:      "roles",
-			HelpSynopsis: "List roles.",
-			Operations: map[logical.Operation]framework.OperationHandler{
-				logical.ListOperation: &framework.PathOperation{Callback: b.roleList},
+				logical.ListOperation:   &framework.PathOperation{Callback: b.roleList},
 			},
 		},
 	}
@@ -67,16 +61,22 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 	}
 	// Validate SID format if provided in raw input
 	boundGroupSIDsRaw, _ := d.Get("bound_group_sids").(string)
-	if boundGroupSIDsRaw != "" {
-		// Check if any SID is empty (after trimming)
-		sids := strings.Split(boundGroupSIDsRaw, ",")
-		for _, sid := range sids {
-			sid = strings.TrimSpace(sid)
-			if sid == "" {
-				return logical.ErrorResponse("SID cannot be empty"), nil
+	if d.Raw != nil {
+		if _, exists := d.Raw["bound_group_sids"]; exists {
+			// If bound_group_sids parameter exists, validate it
+			if boundGroupSIDsRaw == "" {
+				return logical.ErrorResponse("bound_group_sids cannot be empty when specified"), nil
 			}
-			if !isValidSID(sid) {
-				return logical.ErrorResponse("invalid SID format: " + sid), nil
+			// Check if any SID is empty (after trimming)
+			sids := strings.Split(boundGroupSIDsRaw, ",")
+			for _, sid := range sids {
+				sid = strings.TrimSpace(sid)
+				if sid == "" {
+					return logical.ErrorResponse("SID cannot be empty"), nil
+				}
+				if !isValidSID(sid) {
+					return logical.ErrorResponse("invalid SID format: " + sid), nil
+				}
 			}
 		}
 	}
