@@ -30,6 +30,93 @@ type RotationConfig struct {
 	NotificationEndpoint string        `json:"notification_endpoint"` // Webhook for notifications
 }
 
+// Validate validates the rotation configuration
+func (c *RotationConfig) Validate() error {
+	if c.Enabled {
+		// Validate check interval (minimum 1 minute, maximum 24 hours)
+		if c.CheckInterval < time.Minute {
+			return fmt.Errorf("check_interval must be at least 1 minute")
+		}
+		if c.CheckInterval > 24*time.Hour {
+			return fmt.Errorf("check_interval must be at most 24 hours")
+		}
+
+		// Validate rotation threshold (minimum 1 hour, maximum 7 days)
+		if c.RotationThreshold < time.Hour {
+			return fmt.Errorf("rotation_threshold must be at least 1 hour")
+		}
+		if c.RotationThreshold > 7*24*time.Hour {
+			return fmt.Errorf("rotation_threshold must be at most 7 days")
+		}
+
+		// Validate retry configuration
+		if c.MaxRetries < 0 || c.MaxRetries > 10 {
+			return fmt.Errorf("max_retries must be between 0 and 10")
+		}
+		if c.RetryDelay < time.Minute || c.RetryDelay > time.Hour {
+			return fmt.Errorf("retry_delay must be between 1 minute and 1 hour")
+		}
+
+		// Validate required fields for AD operations
+		if c.DomainController == "" {
+			return fmt.Errorf("domain_controller is required when rotation is enabled")
+		}
+		if c.DomainAdminUser == "" {
+			return fmt.Errorf("domain_admin_user is required when rotation is enabled")
+		}
+		if c.DomainAdminPassword == "" {
+			return fmt.Errorf("domain_admin_password is required when rotation is enabled")
+		}
+
+		// Validate keytab command
+		if c.KeytabCommand == "" {
+			c.KeytabCommand = "ktpass" // Default for Windows
+		}
+	}
+
+	// Validate notification endpoint format if provided
+	if c.NotificationEndpoint != "" {
+		if !strings.HasPrefix(c.NotificationEndpoint, "http://") && !strings.HasPrefix(c.NotificationEndpoint, "https://") {
+			return fmt.Errorf("notification_endpoint must be a valid HTTP/HTTPS URL")
+		}
+	}
+
+	return nil
+}
+
+// RotationError represents a structured rotation error
+type RotationError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Cause   error  `json:"cause,omitempty"`
+}
+
+func (e *RotationError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %s (caused by: %v)", e.Type, e.Message, e.Cause)
+	}
+	return fmt.Sprintf("%s: %s", e.Type, e.Message)
+}
+
+// NewRotationError creates a new structured rotation error
+func NewRotationError(errorType, message string, cause error) *RotationError {
+	return &RotationError{
+		Type:    errorType,
+		Message: message,
+		Cause:   cause,
+	}
+}
+
+// Common rotation error types
+const (
+	ErrorTypeConfig     = "CONFIG_ERROR"
+	ErrorTypeAD         = "AD_ERROR"
+	ErrorTypeKeytab     = "KEYTAB_ERROR"
+	ErrorTypeValidation = "VALIDATION_ERROR"
+	ErrorTypeNetwork    = "NETWORK_ERROR"
+	ErrorTypeTimeout    = "TIMEOUT_ERROR"
+)
+
 // RotationStatus tracks the current rotation state
 type RotationStatus struct {
 	LastCheck      time.Time `json:"last_check"`

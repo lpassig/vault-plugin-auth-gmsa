@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ type UnixRotationManager struct {
 }
 
 // NewLinuxRotationManager creates a new Unix-compatible rotation manager
+// This function name is kept for compatibility but now handles all Unix-like systems
 func NewLinuxRotationManager(backend *gmsaBackend, config *RotationConfig) RotationManagerInterface {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -41,9 +43,21 @@ func NewLinuxRotationManager(backend *gmsaBackend, config *RotationConfig) Rotat
 		backend:   backend,
 		ctx:       ctx,
 		cancel:    cancel,
-		logger:    log.New(log.Writer(), "[gmsa-rotation-unix] ", log.LstdFlags),
+		logger:    log.New(log.Writer(), getUnixLoggerPrefix(), log.LstdFlags),
 		stopChan:  make(chan struct{}),
 		isRunning: false,
+	}
+}
+
+// getUnixLoggerPrefix returns platform-specific logger prefix
+func getUnixLoggerPrefix() string {
+	switch runtime.GOOS {
+	case "linux":
+		return "[gmsa-rotation-linux] "
+	case "darwin":
+		return "[gmsa-rotation-macos] "
+	default:
+		return "[gmsa-rotation-unix] "
 	}
 }
 
@@ -66,7 +80,8 @@ func (rm *UnixRotationManager) Start() error {
 	// Start background rotation goroutine
 	go rm.rotationLoop()
 
-	rm.logger.Printf("Unix-compatible automated password rotation started (check interval: %v)", rm.config.CheckInterval)
+	platform := runtime.GOOS
+	rm.logger.Printf("%s-compatible automated password rotation started (check interval: %v)", platform, rm.config.CheckInterval)
 	return nil
 }
 
@@ -92,7 +107,8 @@ func (rm *UnixRotationManager) Stop() error {
 	rm.isRunning = false
 	rm.status.Status = "idle"
 
-	rm.logger.Printf("Unix-compatible automated password rotation stopped")
+	platform := runtime.GOOS
+	rm.logger.Printf("%s-compatible automated password rotation stopped", platform)
 	return nil
 }
 

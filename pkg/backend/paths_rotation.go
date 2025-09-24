@@ -2,7 +2,6 @@ package backend
 
 import (
 	"context"
-	"fmt"
 	"runtime"
 	"time"
 
@@ -149,7 +148,7 @@ func (b *gmsaBackend) rotationConfigWrite(ctx context.Context, req *logical.Requ
 	}
 
 	// Validate configuration
-	if err := b.validateRotationConfig(config); err != nil {
+	if err := config.Validate(); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
 
@@ -333,23 +332,3 @@ func (b *gmsaBackend) rotationManual(ctx context.Context, req *logical.Request, 
 	}, nil
 }
 
-// validateRotationConfig validates rotation configuration
-func (b *gmsaBackend) validateRotationConfig(config *RotationConfig) error {
-	if config.CheckInterval < time.Minute {
-		return fmt.Errorf("check_interval must be at least 1 minute")
-	}
-
-	if config.RotationThreshold < time.Hour {
-		return fmt.Errorf("rotation_threshold must be at least 1 hour")
-	}
-
-	if config.MaxRetries < 1 || config.MaxRetries > 10 {
-		return fmt.Errorf("max_retries must be between 1 and 10")
-	}
-
-	if config.RetryDelay < time.Minute {
-		return fmt.Errorf("retry_delay must be at least 1 minute")
-	}
-
-	return nil
-}
