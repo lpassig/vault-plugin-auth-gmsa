@@ -16,7 +16,6 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 			Pattern:      "role/" + framework.GenericNameRegex("name"),
 			HelpSynopsis: "Create or manage a role that maps principals/groups to policies and constraints.",
 			Fields: map[string]*framework.FieldSchema{
-				"name":             {Type: framework.TypeString, Required: true, Description: "Role name."},
 				"allowed_realms":   {Type: framework.TypeString, Description: "Comma-separated allowed realms."},
 				"allowed_spns":     {Type: framework.TypeString, Description: "Comma-separated allowed SPNs."},
 				"bound_group_sids": {Type: framework.TypeString, Description: "Comma-separated allowed AD group SIDs."},
@@ -32,20 +31,31 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 				logical.UpdateOperation: &framework.PathOperation{Callback: b.roleWrite},
 				logical.ReadOperation:   &framework.PathOperation{Callback: b.roleRead},
 				logical.DeleteOperation: &framework.PathOperation{Callback: b.roleDelete},
-				logical.ListOperation:   &framework.PathOperation{Callback: b.roleList},
+			},
+		},
+		{
+			Pattern:      "role/?",
+			HelpSynopsis: "List all roles.",
+			Operations: map[logical.Operation]framework.OperationHandler{
+				logical.ListOperation: &framework.PathOperation{Callback: b.roleList},
 			},
 		},
 	}
 }
 
 func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-	name := d.Get("name").(string)
-	
+	// Extract name from URL path
+	pathParts := strings.Split(req.Path, "/")
+	if len(pathParts) == 0 {
+		return logical.ErrorResponse("invalid role path"), nil
+	}
+	name := pathParts[len(pathParts)-1]
+
 	// Strict validation: name is required
 	if name == "" {
 		return logical.ErrorResponse("role name is required"), nil
 	}
-	
+
 	tokenTypeRaw, _ := d.Get("token_type").(string)
 	role := Role{
 		Name:           name,
@@ -80,7 +90,7 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 			}
 		}
 	}
-	
+
 	if err := validateRole(&role); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
@@ -115,7 +125,13 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 }
 
 func (b *gmsaBackend) roleRead(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-	name := d.Get("name").(string)
+	// Extract name from URL path
+	pathParts := strings.Split(req.Path, "/")
+	if len(pathParts) == 0 {
+		return logical.ErrorResponse("invalid role path"), nil
+	}
+	name := pathParts[len(pathParts)-1]
+
 	role, err := readRole(ctx, b.storage, name)
 	if err != nil {
 		return nil, err
@@ -127,7 +143,13 @@ func (b *gmsaBackend) roleRead(ctx context.Context, req *logical.Request, d *fra
 }
 
 func (b *gmsaBackend) roleDelete(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-	name := d.Get("name").(string)
+	// Extract name from URL path
+	pathParts := strings.Split(req.Path, "/")
+	if len(pathParts) == 0 {
+		return logical.ErrorResponse("invalid role path"), nil
+	}
+	name := pathParts[len(pathParts)-1]
+
 	if err := deleteRole(ctx, b.storage, name); err != nil {
 		return nil, err
 	}
@@ -141,4 +163,3 @@ func (b *gmsaBackend) roleList(ctx context.Context, req *logical.Request, _ *fra
 	}
 	return logical.ListResponse(keys), nil
 }
-
