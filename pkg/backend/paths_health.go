@@ -53,17 +53,24 @@ func pathsHealth(b *gmsaBackend) []*framework.Path {
 func (b *gmsaBackend) handleHealth(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	detailed := data.Get("detailed").(bool)
 
+	// Get comprehensive plugin metadata
+	metadata := getPluginMetadata()
+
 	response := map[string]interface{}{
 		"status":    "healthy",
 		"version":   pluginVersion,
 		"uptime":    time.Since(startTime).String(),
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"metadata":  metadata,
 		"features": map[string]interface{}{
-			"pac_extraction":      "implemented",
-			"pac_validation":      "implemented",
-			"group_authorization": "implemented",
-			"channel_binding":     "implemented",
-			"clock_skew_check":    "implemented",
+			"pac_extraction":        "implemented",
+			"pac_validation":        "implemented",
+			"group_authorization":   "implemented",
+			"channel_binding":       "implemented",
+			"clock_skew_check":      "implemented",
+			"automated_rotation":    "implemented",
+			"webhook_notifications": "implemented",
+			"health_monitoring":     "implemented",
 		},
 	}
 
@@ -95,10 +102,14 @@ func (b *gmsaBackend) handleMetrics(ctx context.Context, req *logical.Request, d
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
+	// Get comprehensive plugin metadata
+	metadata := getPluginMetadata()
+
 	metrics := map[string]interface{}{
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 		"uptime":    time.Since(startTime).String(),
 		"version":   pluginVersion,
+		"metadata":  metadata,
 		"runtime": map[string]interface{}{
 			"go_version":     runtime.Version(),
 			"num_goroutines": runtime.NumGoroutine(),
@@ -123,13 +134,16 @@ func (b *gmsaBackend) handleMetrics(ctx context.Context, req *logical.Request, d
 			"gc_cpu_fraction":     m.GCCPUFraction,
 		},
 		"features": map[string]interface{}{
-			"pac_extraction":      "implemented",
-			"pac_validation":      "implemented",
-			"group_authorization": "implemented",
-			"channel_binding":     "implemented",
-			"clock_skew_check":    "implemented",
-			"realm_normalization": "implemented",
-			"keytab_extraction":   "implemented",
+			"pac_extraction":        "implemented",
+			"pac_validation":        "implemented",
+			"group_authorization":   "implemented",
+			"channel_binding":       "implemented",
+			"clock_skew_check":      "implemented",
+			"realm_normalization":   "implemented",
+			"keytab_extraction":     "implemented",
+			"automated_rotation":    "implemented",
+			"webhook_notifications": "implemented",
+			"health_monitoring":     "implemented",
 		},
 	}
 

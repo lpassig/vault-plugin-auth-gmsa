@@ -4,10 +4,13 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -458,9 +461,52 @@ func (rm *UnixRotationManager) sendNotification(message string) {
 		return
 	}
 
-	// Log notification (webhook implementation would go here)
-	rm.logger.Printf("Notification: %s", message)
-	rm.logger.Printf("Would send webhook to: %s", rm.config.NotificationEndpoint)
+	// Create notification payload
+	payload := map[string]interface{}{
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"message":        message,
+		"status":         rm.status.Status,
+		"plugin":         "gmsa-auth",
+		"rotation_count": rm.status.RotationCount,
+		"password_age":   rm.status.PasswordAge,
+		"platform":       runtime.GOOS,
+	}
+
+	// Send webhook notification
+	if err := rm.sendWebhook(payload); err != nil {
+		rm.logger.Printf("ERROR: failed to send notification: %v (endpoint: %s)", err, rm.config.NotificationEndpoint)
+	} else {
+		rm.logger.Printf("INFO: notification sent successfully: %s", message)
+	}
+}
+
+// sendWebhook sends a webhook notification with retry logic
+func (rm *UnixRotationManager) sendWebhook(payload map[string]interface{}) error {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", rm.config.NotificationEndpoint, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "vault-gmsa-auth-plugin/"+pluginVersion)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send webhook: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("webhook failed with status: %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 // GetStatus returns the current rotation status

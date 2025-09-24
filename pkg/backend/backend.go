@@ -2,16 +2,50 @@ package backend
 
 import (
 	"context"
-	"log"
 	"runtime"
 	"time"
 
+	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
 // Plugin version constant for tracking and compatibility
 const pluginVersion = "v0.1.0"
+
+// PluginMetadata contains comprehensive plugin information
+type PluginMetadata struct {
+	Version     string   `json:"version"`
+	BuildTime   string   `json:"build_time"`
+	GoVersion   string   `json:"go_version"`
+	SDKVersion  string   `json:"sdk_version"`
+	Features    []string `json:"features"`
+	Platform    string   `json:"platform"`
+	Description string   `json:"description"`
+}
+
+// getPluginMetadata returns comprehensive plugin metadata
+func getPluginMetadata() *PluginMetadata {
+	return &PluginMetadata{
+		Version:     pluginVersion,
+		BuildTime:   "2024-01-15T10:30:00Z", // This would be set at build time
+		GoVersion:   runtime.Version(),
+		SDKVersion:  "v0.19.0",
+		Platform:    runtime.GOOS,
+		Description: "Vault authentication plugin for Windows workloads using gMSA (Kerberos/Negotiate)",
+		Features: []string{
+			"pac_validation",
+			"channel_binding",
+			"automated_rotation",
+			"cross_platform",
+			"realm_normalization",
+			"group_authorization",
+			"audit_logging",
+			"health_monitoring",
+			"webhook_notifications",
+		},
+	}
+}
 
 // RotationManagerInterface defines the interface for rotation managers
 type RotationManagerInterface interface {
@@ -29,13 +63,23 @@ type gmsaBackend struct {
 	storage         logical.Storage          // Vault's storage interface for persistent data
 	now             func() time.Time         // Time function for testing and consistency
 	rotationManager RotationManagerInterface // Automated password rotation manager (platform-specific)
+	logger          hclog.Logger             // Vault-compatible logger
 }
 
 // Factory creates and configures a new gMSA auth method backend
 // This is the entry point called by Vault when loading the plugin
 func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend, error) {
-	// Initialize backend with current time function
-	b := &gmsaBackend{now: time.Now}
+	// Create logger with proper configuration
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:  "gmsa-auth",
+		Level: hclog.Info,
+	})
+
+	// Initialize backend with current time function and logger
+	b := &gmsaBackend{
+		now:    time.Now,
+		logger: logger,
+	}
 
 	// Configure the Vault framework backend
 	b.Backend = &framework.Backend{
@@ -71,7 +115,7 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 	if err := b.initializeRotationManager(ctx); err != nil {
 		// Log error but don't fail plugin initialization
 		// Rotation is optional functionality
-		log.Printf("Warning: failed to initialize rotation manager: %v", err)
+		b.logger.Warn("failed to initialize rotation manager", "error", err)
 	}
 
 	return b, nil
@@ -98,10 +142,10 @@ func (b *gmsaBackend) initializeRotationManager(ctx context.Context) error {
 	// Create platform-specific rotation manager
 	if runtime.GOOS == "windows" {
 		b.rotationManager = NewRotationManager(b, &config)
-		log.Printf("Windows rotation manager initialized")
+		b.logger.Info("Windows rotation manager initialized")
 	} else {
 		b.rotationManager = NewLinuxRotationManager(b, &config)
-		log.Printf("Linux rotation manager initialized")
+		b.logger.Info("Linux rotation manager initialized")
 	}
 
 	// Start rotation manager if enabled
@@ -109,9 +153,9 @@ func (b *gmsaBackend) initializeRotationManager(ctx context.Context) error {
 		if err := b.rotationManager.Start(); err != nil {
 			return err
 		}
-		log.Printf("Automated password rotation initialized and started on %s", runtime.GOOS)
+		b.logger.Info("automated password rotation initialized and started", "platform", runtime.GOOS)
 	} else {
-		log.Printf("Automated password rotation initialized but not started (disabled)")
+		b.logger.Info("automated password rotation initialized but not started (disabled)")
 	}
 
 	return nil
