@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"time"
 
@@ -51,6 +52,15 @@ func pathsHealth(b *gmsaBackend) []*framework.Path {
 // handleHealth returns the health status of the plugin
 // This endpoint provides basic health information and optional detailed system metrics
 func (b *gmsaBackend) handleHealth(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	// Validate that only known parameters are provided
+	if len(req.Data) > 0 {
+		for key := range req.Data {
+			if key != "detailed" {
+				return logical.ErrorResponse(fmt.Sprintf("unknown parameter: %s", key)), nil
+			}
+		}
+	}
+	
 	detailed := data.Get("detailed").(bool)
 
 	// Get comprehensive plugin metadata

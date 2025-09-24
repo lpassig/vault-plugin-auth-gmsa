@@ -148,9 +148,12 @@ func normalizeAndValidateConfig(c *Config) error {
 		len(c.Normalization.RealmPrefixes) == 0 && len(c.Normalization.SPNPrefixes) == 0 {
 		c.Normalization = getDefaultNormalizationConfig()
 	}
-	// Validate realm: UPPERCASE, limited character set.
+	// Validate realm: UPPERCASE, limited character set, size limit.
 	if c.Realm == "" || strings.ToUpper(c.Realm) != c.Realm {
 		return errors.New("realm must be UPPERCASE and non-empty")
+	}
+	if len(c.Realm) > 255 {
+		return errors.New("realm too long; maximum 255 characters")
 	}
 	realmRe := regexp.MustCompile(`^[A-Z0-9.-]+$`)
 	if !realmRe.MatchString(c.Realm) {
@@ -171,6 +174,9 @@ func normalizeAndValidateConfig(c *Config) error {
 		k := strings.TrimSpace(raw)
 		if k == "" {
 			return errors.New("kdcs contains empty entry")
+		}
+		if len(k) > 255 {
+			return errors.New("kdc entry too long; maximum 255 characters")
 		}
 		host := k
 		if strings.Contains(k, ":") {
@@ -244,7 +250,71 @@ func validateRole(r *Role) error {
 	if r.Name == "" {
 		return errors.New("role name is required")
 	}
+	
+	// Validate SID format if provided
+	for _, sid := range r.BoundGroupSIDs {
+		if sid == "" {
+			return errors.New("SID cannot be empty")
+		}
+		if !isValidSID(sid) {
+			return errors.New("invalid SID format: " + sid)
+		}
+	}
+	
+	// Validate policy names to prevent injection
+	for _, policy := range r.TokenPolicies {
+		if !isValidPolicyName(policy) {
+			return errors.New("invalid policy name: " + policy)
+		}
+	}
+	
+	for _, policy := range r.DenyPolicies {
+		if !isValidPolicyName(policy) {
+			return errors.New("invalid deny policy name: " + policy)
+		}
+	}
+	
 	return nil
+}
+
+// isValidSID validates Windows SID format
+func isValidSID(sid string) bool {
+	// SID format: S-1-5-21-1234567890-1234567890-1234567890-1234
+	// Must start with S-1- and contain only digits and hyphens
+	if !strings.HasPrefix(sid, "S-1-") {
+		return false
+	}
+	
+	// Remove S-1- prefix and validate remaining parts
+	parts := strings.Split(sid[4:], "-")
+	if len(parts) < 2 {
+		return false
+	}
+	
+	// Each part should be numeric
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, char := range part {
+			if char < '0' || char > '9' {
+				return false
+			}
+		}
+	}
+	
+	return true
+}
+
+// isValidPolicyName validates Vault policy names
+func isValidPolicyName(policy string) bool {
+	if policy == "" {
+		return false
+	}
+	
+	// Policy names should only contain alphanumeric characters, hyphens, and underscores
+	policyRe := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	return policyRe.MatchString(policy)
 }
 
 // Normalization functions for flexible environment adaptation

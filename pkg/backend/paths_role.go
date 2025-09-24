@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/vault/sdk/framework"
@@ -45,6 +46,12 @@ func pathsRole(b *gmsaBackend) []*framework.Path {
 
 func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
+	
+	// Strict validation: name is required
+	if name == "" {
+		return logical.ErrorResponse("role name is required"), nil
+	}
+	
 	tokenTypeRaw, _ := d.Get("token_type").(string)
 	role := Role{
 		Name:           name,
@@ -58,6 +65,22 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 		DenyPolicies:   csvToSlice(d.Get("deny_policies")),
 		MergeStrategy:  mergeStrategyOrDefault(d.Get("merge_strategy")),
 	}
+	// Validate SID format if provided in raw input
+	boundGroupSIDsRaw, _ := d.Get("bound_group_sids").(string)
+	if boundGroupSIDsRaw != "" {
+		// Check if any SID is empty (after trimming)
+		sids := strings.Split(boundGroupSIDsRaw, ",")
+		for _, sid := range sids {
+			sid = strings.TrimSpace(sid)
+			if sid == "" {
+				return logical.ErrorResponse("SID cannot be empty"), nil
+			}
+			if !isValidSID(sid) {
+				return logical.ErrorResponse("invalid SID format: " + sid), nil
+			}
+		}
+	}
+	
 	if err := validateRole(&role); err != nil {
 		return logical.ErrorResponse(err.Error()), nil
 	}
@@ -68,10 +91,9 @@ func (b *gmsaBackend) roleWrite(ctx context.Context, req *logical.Request, d *fr
 	if role.MaxTTL < 0 || role.MaxTTL > int(24*time.Hour/time.Second) {
 		return logical.ErrorResponse("max_ttl must be between 0 and 86400 seconds"), nil
 	}
-	// Validate merge strategy
-	switch role.MergeStrategy {
-	case "union", "override":
-	default:
+	// Validate merge strategy - must be explicitly set to valid values
+	mergeStrategyRaw, _ := d.Get("merge_strategy").(string)
+	if mergeStrategyRaw != "" && mergeStrategyRaw != "union" && mergeStrategyRaw != "override" {
 		return logical.ErrorResponse("merge_strategy must be 'union' or 'override'"), nil
 	}
 	// Normalize policy lists (dedupe)
@@ -119,3 +141,4 @@ func (b *gmsaBackend) roleList(ctx context.Context, req *logical.Request, _ *fra
 	}
 	return logical.ListResponse(keys), nil
 }
+

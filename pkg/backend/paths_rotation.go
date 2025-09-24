@@ -275,8 +275,27 @@ func (b *gmsaBackend) rotationStatusRead(ctx context.Context, req *logical.Reque
 
 // rotationStart handles starting automatic rotation
 func (b *gmsaBackend) rotationStart(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	// Check if configuration exists
+	entry, err := b.storage.Get(ctx, "rotation/config")
+	if err != nil {
+		return nil, err
+	}
+	if entry == nil {
+		return logical.ErrorResponse("rotation configuration not found"), nil
+	}
+
+	var config RotationConfig
+	if err := entry.DecodeJSON(&config); err != nil {
+		return nil, err
+	}
+
+	// Initialize rotation manager if not already done
 	if b.rotationManager == nil {
-		return logical.ErrorResponse("rotation manager not initialized"), nil
+		if runtime.GOOS == "windows" {
+			b.rotationManager = NewRotationManager(b, &config)
+		} else {
+			b.rotationManager = NewLinuxRotationManager(b, &config)
+		}
 	}
 
 	if err := b.rotationManager.Start(); err != nil {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -64,6 +65,9 @@ func (c *RotationConfig) Validate() error {
 		if c.DomainController == "" {
 			return fmt.Errorf("domain_controller is required when rotation is enabled")
 		}
+		if !isValidCommand(c.DomainController) {
+			return fmt.Errorf("domain_controller contains invalid characters")
+		}
 		if c.DomainAdminUser == "" {
 			return fmt.Errorf("domain_admin_user is required when rotation is enabled")
 		}
@@ -75,6 +79,9 @@ func (c *RotationConfig) Validate() error {
 		if c.KeytabCommand == "" {
 			c.KeytabCommand = "ktpass" // Default for Windows
 		}
+		if !isValidCommand(c.KeytabCommand) {
+			return fmt.Errorf("keytab_command contains invalid characters")
+		}
 	}
 
 	// Validate notification endpoint format if provided
@@ -85,6 +92,17 @@ func (c *RotationConfig) Validate() error {
 	}
 
 	return nil
+}
+
+// isValidCommand validates command names to prevent injection
+func isValidCommand(cmd string) bool {
+	if cmd == "" {
+		return false
+	}
+	
+	// Commands should only contain alphanumeric characters, hyphens, underscores, and dots
+	cmdRe := regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+	return cmdRe.MatchString(cmd)
 }
 
 // RotationError represents a structured rotation error
