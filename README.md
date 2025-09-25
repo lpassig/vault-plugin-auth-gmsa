@@ -221,8 +221,8 @@ sc.exe create "MyApp" binpath="C:\myapp\myapp.exe" start=auto
 sc.exe config "MyApp" obj="local.lab\vault-gmsa$"
 sc.exe config "MyApp" password=""
 
-# Option B: Run as scheduled task under gMSA
-Register-ScheduledTask -TaskName "MyApp-Task" -Action $action -User "local.lab\vault-gmsa$" -Password ""
+# Option B: Run as scheduled task under gMSA (NO PASSWORD for gMSA!)
+Register-ScheduledTask -TaskName "MyApp-Task" -Action $action -User "local.lab\vault-gmsa$"
 ```
 
 #### **How Client Authentication Works**
@@ -582,13 +582,34 @@ $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-Executio
 # Create trigger (daily at 2 AM)
 $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
 
-# Register under gMSA identity (no password needed!)
-Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$" -Password ""
+# Register under gMSA identity (NO PASSWORD for gMSA!)
+Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$"
 ```
 
 #### **5.5 Prerequisites**
 
 Before running the scripts, ensure:
+
+**⚠️ CRITICAL: Batch Job Rights Required**
+
+The gMSA must have "Log on as a batch job" right on the client machine:
+
+```powershell
+# Method 1: Using Local Security Policy (secpol.msc)
+# 1. Run secpol.msc on the client machine
+# 2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job
+# 3. Add: local.lab\vault-gmsa$
+
+# Method 2: Using PowerShell (requires admin rights)
+# Grant the right programmatically
+$userRight = "SeBatchLogonRight"
+$gmsaAccount = "local.lab\vault-gmsa$"
+
+# This requires the NtRights module or manual registry modification
+# For production, use Group Policy Objects (GPO) instead
+```
+
+**Other Prerequisites:**
 
 ```powershell
 # 1. gMSA is installed on the client machine
@@ -714,8 +735,8 @@ $action = New-ScheduledTaskAction -Execute "C:\vault\scripts\my-app-task.bat"
 $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-# Create task with gMSA identity
-Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "YOURDOMAIN\vault-gmsa$" -Password ""
+# Create task with gMSA identity (NO PASSWORD for gMSA!)
+Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "YOURDOMAIN\vault-gmsa$"
 ```
 
 #### **6.2 Create Application Task Script**

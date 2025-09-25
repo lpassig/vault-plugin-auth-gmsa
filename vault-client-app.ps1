@@ -312,12 +312,19 @@ function Create-ScheduledTask {
         # Create settings
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
         
-        # Register task under gMSA identity
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$" -Password ""
+        # Register task under gMSA identity (NO PASSWORD for gMSA!)
+        # gMSAs don't have usable passwords - Windows fetches them automatically from AD
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$"
         
         Write-Log "Scheduled task created successfully: $TaskName"
         Write-Log "Task runs under: local.lab\vault-gmsa$"
         Write-Log "Schedule: Daily at 2:00 AM"
+        Write-Log ""
+        Write-Log "IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -Level "WARNING"
+        Write-Log "1. Run secpol.msc on this machine" -Level "WARNING"
+        Write-Log "2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job" -Level "WARNING"
+        Write-Log "3. Add: local.lab\vault-gmsa$" -Level "WARNING"
+        Write-Log "4. Or configure via GPO if domain-managed" -Level "WARNING"
         
         return $true
         

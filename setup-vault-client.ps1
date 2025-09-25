@@ -164,13 +164,20 @@ function New-VaultClientScheduledTask {
         # Create settings
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
         
-        # Register task under gMSA identity
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$" -Password ""
+        # Register task under gMSA identity (NO PASSWORD for gMSA!)
+        # gMSAs don't have usable passwords - Windows fetches them automatically from AD
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$"
         
         Write-Host "✅ Scheduled task created successfully: $TaskName" -ForegroundColor Green
         Write-Host "   - Identity: local.lab\vault-gmsa$" -ForegroundColor Cyan
         Write-Host "   - Schedule: $Schedule at $Time" -ForegroundColor Cyan
         Write-Host "   - Script: $ScriptPath" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "⚠️  IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -ForegroundColor Yellow
+        Write-Host "   1. Run secpol.msc on this machine" -ForegroundColor Yellow
+        Write-Host "   2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job" -ForegroundColor Yellow
+        Write-Host "   3. Add: local.lab\vault-gmsa$" -ForegroundColor Yellow
+        Write-Host "   4. Or configure via GPO if domain-managed" -ForegroundColor Yellow
         
         return $true
         
