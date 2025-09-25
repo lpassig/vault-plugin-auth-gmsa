@@ -12,7 +12,7 @@ param(
     [string]$VaultUrl = "https://vault.local.lab:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab",
-    [string[]]$SecretPaths = @("secret/data/my-app/database", "secret/data/my-app/api"),
+    [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
     [string]$ConfigOutputDir = "C:\vault\config",
     [switch]$CreateScheduledTask = $false,
     [string]$TaskName = "VaultClientApp"
@@ -186,8 +186,8 @@ function Use-SecretsInApplication {
         Write-Log "Processing secrets for application use..."
         
         # Example 1: Database Connection
-        if ($Secrets["secret/data/my-app/database"]) {
-            $dbSecret = $Secrets["secret/data/my-app/database"]
+        if ($Secrets["kv/data/my-app/database"]) {
+            $dbSecret = $Secrets["kv/data/my-app/database"]
             
             Write-Log "Setting up database connection..."
             Write-Log "Database Host: $($dbSecret.host)"
@@ -213,8 +213,8 @@ function Use-SecretsInApplication {
         }
         
         # Example 2: API Integration
-        if ($Secrets["secret/data/my-app/api"]) {
-            $apiSecret = $Secrets["secret/data/my-app/api"]
+        if ($Secrets["kv/data/my-app/api"]) {
+            $apiSecret = $Secrets["kv/data/my-app/api"]
             
             Write-Log "Setting up API integration..."
             Write-Log "API Endpoint: $($apiSecret.endpoint)"
@@ -244,15 +244,15 @@ function Use-SecretsInApplication {
         Write-Log "Setting up environment variables..."
         $envVars = @{}
         
-        if ($Secrets["secret/data/my-app/database"]) {
-            $dbSecret = $Secrets["secret/data/my-app/database"]
+        if ($Secrets["kv/data/my-app/database"]) {
+            $dbSecret = $Secrets["kv/data/my-app/database"]
             $envVars["DB_HOST"] = $dbSecret.host
             $envVars["DB_USER"] = $dbSecret.username
             $envVars["DB_PASSWORD"] = $dbSecret.password
         }
         
-        if ($Secrets["secret/data/my-app/api"]) {
-            $apiSecret = $Secrets["secret/data/my-app/api"]
+        if ($Secrets["kv/data/my-app/api"]) {
+            $apiSecret = $Secrets["kv/data/my-app/api"]
             $envVars["API_ENDPOINT"] = $apiSecret.endpoint
             $envVars["API_KEY"] = $apiSecret.api_key
         }

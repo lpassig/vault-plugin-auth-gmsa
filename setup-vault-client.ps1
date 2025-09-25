@@ -11,7 +11,7 @@ param(
     [string]$TaskName = "VaultClientApp",
     [string]$Schedule = "Daily",
     [string]$Time = "02:00",
-    [string[]]$SecretPaths = @("secret/data/my-app/database", "secret/data/my-app/api")
+    [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api")
 )
 
 # =============================================================================
@@ -210,14 +210,14 @@ function New-ConfigurationFiles {
 Before running the client application, ensure these secrets exist in Vault:
 
 1. Database Secret:
-   vault kv put secret/my-app/database host="db-server.local.lab" username="app-user" password="secure-password"
+   vault kv put kv/my-app/database host="db-server.local.lab" username="app-user" password="secure-password"
 
 2. API Secret:
-   vault kv put secret/my-app/api api_key="your-api-key" endpoint="https://api.local.lab"
+   vault kv put kv/my-app/api api_key="your-api-key" endpoint="https://api.local.lab"
 
 3. Verify secrets:
-   vault kv get secret/my-app/database
-   vault kv get secret/my-app/api
+   vault kv get kv/my-app/database
+   vault kv get kv/my-app/api
 
 4. Check Vault auth method configuration:
    vault read auth/gmsa/config
