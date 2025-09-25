@@ -126,6 +126,71 @@ ktpass -princ HTTP/vault.local.lab@local.lab -mapuser LOCAL\vault-keytab-svc -cr
 **Alternative: Use gMSA Directly on Windows**
 If you're running Vault on Windows, you can configure the Vault service to run directly under the gMSA identity, eliminating the need for keytab export entirely.
 
+**Method 2: Extract gMSA Keytab Using Advanced Techniques**
+```powershell
+# This method requires elevated privileges and may not work in all environments
+# Use at your own risk - it may break the gMSA
+
+# Method 2a: Use ktutil with managed password (if available)
+# First, you need to get the current managed password
+# This requires advanced PowerShell techniques or third-party tools
+
+# Method 2b: Use LSA secrets (advanced, not recommended for production)
+# This involves accessing Windows LSA secrets directly
+# Only use in lab environments
+
+# Method 2c: Use gMSA with Windows services (RECOMMENDED)
+# Configure Vault to run as a Windows service under the gMSA identity
+# This is the proper way to use gMSAs
+```
+
+---
+
+### **Step 1.6: Using gMSA with Vault (Advanced)**
+
+If you specifically need to use the gMSA with Vault, here are the approaches:
+
+#### **Option A: Force ktpass with gMSA (Use with Caution)**
+```powershell
+# ⚠️ WARNING: This will reset the gMSA password and may break existing services
+# Only use in lab environments or when you can accept downtime
+
+# Force ktpass to reset the gMSA password
+ktpass -princ HTTP/vault.local.lab@local.lab -mapuser LOCAL\vault-gmsa$ -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out vault-gmsa.keytab
+
+# When prompted "Reset vault-gmsa$'s password [y/n]?", answer 'y'
+# This will break any existing services using the gMSA until they restart
+```
+
+#### **Option B: Use gMSA with Windows Service (Recommended)**
+```powershell
+# Configure Vault to run as a Windows service under the gMSA
+# This is the proper way to use gMSAs - no keytab needed
+
+# 1. Install Vault as a Windows service
+sc.exe create "Vault" binpath="C:\vault\vault.exe server -config=C:\vault\vault.hcl" start=auto
+
+# 2. Configure service to run under gMSA
+sc.exe config "Vault" obj="local.lab\vault-gmsa$"
+sc.exe config "Vault" password=""
+
+# 3. Start the service
+sc.exe start "Vault"
+```
+
+#### **Option C: Extract gMSA Password Using LSA Secrets**
+```powershell
+# ⚠️ ADVANCED TECHNIQUE - Use only in lab environments
+# This accesses Windows LSA secrets directly
+
+# Get the gMSA password from LSA secrets
+$gmsaSid = (Get-ADServiceAccount -Identity "vault-gmsa").SID.Value
+$lsaSecret = [System.Security.Principal.SecurityIdentifier]::new($gmsaSid)
+
+# This requires additional PowerShell modules and elevated privileges
+# Implementation details vary by Windows version
+```
+
 ---
 
 ### **Step 2: Configure Vault Server**
