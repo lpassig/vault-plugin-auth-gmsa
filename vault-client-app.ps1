@@ -52,6 +52,9 @@ function Get-SPNEGOToken {
     try {
         Write-Log "Generating SPNEGO token for SPN: $TargetSPN"
         
+        # Load required .NET assemblies for HttpClient
+        Add-Type -AssemblyName System.Net.Http
+        
         # Method 1: Using .NET HttpClient with Windows authentication
         $handler = New-Object System.Net.Http.HttpClientHandler
         $handler.UseDefaultCredentials = $true
