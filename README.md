@@ -98,14 +98,43 @@ Get-ADGroupMember Vault-Clients
 Get-ADGroupMember Vault-Servers
 ```
 
-#### **1.5 Export Keytab**
+#### **1.5 Export Keytab for gMSA**
 ```powershell
-# Export keytab for the gMSA (run on domain controller)
-ktpass -princ HTTP/vault.yourdomain.com@YOURDOMAIN.COM -mapuser YOURDOMAIN\vault-gmsa$ -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out vault-gmsa.keytab
+# For gMSAs, use ktutil instead of ktpass to avoid password reset
+# First, get the current password for the gMSA
+$gmsaPassword = Get-ADServiceAccountPassword -Identity "vault-gmsa"
 
-# Convert to base64 for Vault configuration
+# Create keytab using ktutil (if available) or use alternative method
+# Method 1: Using ktutil (if installed)
+ktutil -k vault-gmsa.keytab add -p HTTP/vault.yourdomain.com@YOURDOMAIN.COM -e aes256-cts-hmac-sha1-96 -w $gmsaPassword
+
+# Method 2: Alternative - Use PowerShell to create keytab
+# This requires additional tools or manual keytab creation
+# For now, we'll use the gMSA directly without keytab export
+
+# Convert to base64 for Vault configuration (if keytab created)
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("vault-gmsa.keytab"))
 ```
+
+**⚠️ Important Note**: gMSAs have managed passwords that are automatically rotated by AD. The `ktpass` command will warn you about resetting the password - **always answer 'n' (no)** to avoid breaking the gMSA.
+
+**Alternative Approaches**:
+
+1. **Use Regular Service Account for Keytab**: Create a regular service account specifically for keytab generation:
+```powershell
+# Create regular service account for keytab
+New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@local.lab" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
+
+# Add SPN to regular service account
+setspn -A HTTP/vault.local.lab LOCAL\vault-keytab-svc
+
+# Now export keytab (this will work without warnings)
+ktpass -princ HTTP/vault.local.lab@local.lab -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+```
+
+2. **Use gMSA Directly on Windows**: Configure Windows services to run under the gMSA identity directly, eliminating the need for keytab export.
+
+3. **Use ktutil with gMSA Password**: If you have ktutil available, you can create keytabs without resetting the gMSA password.
 
 ---
 
@@ -480,6 +509,22 @@ Restart-Computer
 
 # 3. After reboot, test again
 Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
+```
+
+**Error: "WARNING: Account vault-gmsa$ is not a user account" during ktpass**
+```powershell
+# This warning appears when trying to export keytab for gMSA
+# ALWAYS answer 'n' (no) to avoid breaking the gMSA
+
+# Instead, use one of these alternatives:
+
+# Option 1: Create regular service account for keytab
+New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@local.lab" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
+setspn -A HTTP/vault.local.lab LOCAL\vault-keytab-svc
+ktpass -princ HTTP/vault.local.lab@local.lab -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+
+# Option 2: Use gMSA directly without keytab export
+# Configure Windows services to run under gMSA identity directly
 ```
 
 #### **Authentication Failures**
