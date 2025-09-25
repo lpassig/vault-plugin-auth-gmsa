@@ -35,24 +35,40 @@ This is the **main production use case** for this plugin: running Vault Agent un
 
 #### **📁 Example Files Available**
 
-This repository includes three ready-to-use PowerShell examples:
+This repository includes comprehensive PowerShell examples for different use cases:
 
-1. **`simple-gmsa-task-example.ps1`** - **Quick Start**
+**🎯 Client Application Examples:**
+1. **`vault-client-app.ps1`** - **Complete Client Application**
+   - Full-featured PowerShell application that reads secrets from Vault
+   - Runs under gMSA identity (scheduled task or manual)
+   - Saves configurations to JSON files and environment variables
+   - Restarts application services automatically
+   - Comprehensive logging and error handling
+
+2. **`setup-vault-client.ps1`** - **Automated Setup Script**
+   - One-click setup for the client application
+   - Creates scheduled task under gMSA identity
+   - Prerequisites checking and validation
+   - Configuration file generation
+   - Complete testing and verification
+
+**🔧 Development Examples:**
+3. **`simple-gmsa-task-example.ps1`** - **Quick Start**
    - Minimal implementation for learning
    - Basic authentication flow
    - Perfect for testing and understanding the concept
 
-2. **`gmsa-scheduled-task-example.ps1`** - **Complete Implementation**
+4. **`gmsa-scheduled-task-example.ps1`** - **Complete Implementation**
    - Full end-to-end example with detailed explanations
    - Comprehensive error handling and logging
    - Manual testing capabilities
 
-3. **`production-gmsa-example.ps1`** - **Production Ready**
+5. **`production-gmsa-example.ps1`** - **Production Ready**
    - Real SPNEGO token generation using .NET HttpClient
    - Complete application integration (config updates, service restarts)
    - Comprehensive monitoring and troubleshooting
 
-**Quick Start:** Run `.\simple-gmsa-task-example.ps1` as Administrator to get started immediately!
+**🚀 Quick Start:** Run `.\setup-vault-client.ps1` as Administrator for complete automated setup!
 
 ---
 
@@ -447,6 +463,49 @@ echo Restarting application due to secret update...
 net stop "MyApplication"
 net start "MyApplication"
 echo Application restarted successfully.
+```
+
+---
+
+## **🎯 Recommended: Client Application Approach**
+
+The **client application approach** is the most practical way to use this plugin. It involves creating a PowerShell application that runs as a scheduled task under gMSA identity and reads secrets from Vault.
+
+### **Why This Approach?**
+
+✅ **Simple Setup** - One script handles everything  
+✅ **Real Application** - Actually reads and uses secrets from Vault  
+✅ **Scheduled Execution** - Runs automatically under gMSA identity  
+✅ **Configuration Management** - Saves secrets to files for other applications  
+✅ **Service Integration** - Can restart services when secrets change  
+✅ **Comprehensive Logging** - Full audit trail of secret access  
+✅ **Production Ready** - Handles errors, retries, and edge cases  
+
+### **Quick Start (30 seconds):**
+
+```powershell
+# 1. Run as Administrator
+.\setup-vault-client.ps1
+
+# 2. That's it! The application is now set up and will run daily at 2 AM
+```
+
+### **What You Get:**
+
+- **Scheduled Task**: Runs daily under `local.lab\vault-gmsa$` identity
+- **Secret Reading**: Automatically retrieves secrets from Vault
+- **Configuration Files**: Saves secrets to JSON files and environment variables
+- **Service Management**: Restarts application services when secrets change
+- **Comprehensive Logging**: Full audit trail in `C:\vault-client\config\vault-client.log`
+
+### **Example Output:**
+
+```
+C:\vault-client\config\
+├── database-config.json    # Database connection details
+├── api-config.json         # API credentials and endpoints
+├── .env                    # Environment variables for other apps
+└── vault-client.log        # Complete execution log
 ```
 
 ---
