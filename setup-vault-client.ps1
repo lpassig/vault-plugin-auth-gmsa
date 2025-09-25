@@ -164,9 +164,11 @@ function New-VaultClientScheduledTask {
         # Create settings
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
         
-        # Register task under gMSA identity (NO PASSWORD for gMSA!)
-        # gMSAs don't have usable passwords - Windows fetches them automatically from AD
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$"
+        # Register task under gMSA identity with correct LogonType
+        # Key: Use LogonType ServiceAccount for gMSA (no password stored)
+        $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+        
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
         
         Write-Host "✅ Scheduled task created successfully: $TaskName" -ForegroundColor Green
         Write-Host "   - Identity: local.lab\vault-gmsa$" -ForegroundColor Cyan

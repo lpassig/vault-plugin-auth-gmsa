@@ -269,9 +269,11 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Write-Host "Registering scheduled task under gMSA identity..." -ForegroundColor Yellow
 
 try {
-    # Register the task with gMSA identity (NO PASSWORD for gMSA!)
-    # gMSAs don't have usable passwords - Windows fetches them automatically from AD
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$"
+    # Register the task with gMSA identity with correct LogonType
+    # Key: Use LogonType ServiceAccount for gMSA (no password stored)
+    $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+    
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
     
     Write-Host "✅ Scheduled task '$TaskName' created successfully!" -ForegroundColor Green
     Write-Host "   - Task runs under: local.lab\vault-gmsa$" -ForegroundColor Cyan

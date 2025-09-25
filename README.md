@@ -582,8 +582,10 @@ $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-Executio
 # Create trigger (daily at 2 AM)
 $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
 
-# Register under gMSA identity (NO PASSWORD for gMSA!)
-Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$"
+# Register under gMSA identity with correct LogonType
+# Key: Use LogonType ServiceAccount for gMSA (no password stored)
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 ```
 
 #### **5.5 Prerequisites**
@@ -735,8 +737,10 @@ $action = New-ScheduledTaskAction -Execute "C:\vault\scripts\my-app-task.bat"
 $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
-# Create task with gMSA identity (NO PASSWORD for gMSA!)
-Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "YOURDOMAIN\vault-gmsa$"
+# Create task with gMSA identity with correct LogonType
+# Key: Use LogonType ServiceAccount for gMSA (no password stored)
+$principal = New-ScheduledTaskPrincipal -UserId "YOURDOMAIN\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 ```
 
 #### **6.2 Create Application Task Script**

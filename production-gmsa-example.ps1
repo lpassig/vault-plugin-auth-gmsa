@@ -283,10 +283,12 @@ $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
 # Task settings
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
 
-# Register the task under gMSA identity (NO PASSWORD for gMSA!)
-# gMSAs don't have usable passwords - Windows fetches them automatically from AD
+# Register the task under gMSA identity with correct LogonType
+# Key: Use LogonType ServiceAccount for gMSA (no password stored)
 try {
-    Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$"
+    $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+    
+    Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -Principal $principal
     
     Write-Host "✅ Production scheduled task created successfully!" -ForegroundColor Green
     Write-Host "   - Task Name: VaultSecretRefresh" -ForegroundColor Cyan
