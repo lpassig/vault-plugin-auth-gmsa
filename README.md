@@ -31,6 +31,7 @@ This is the **main production use case** for this plugin: running Vault Agent un
 - Active Directory domain with gMSA configured
 - Vault server accessible from Windows machines
 - Vault Agent binary installed on Windows machine
+- **RSAT Active Directory PowerShell module** installed on client machines
 
 ---
 
@@ -171,9 +172,42 @@ vault kv put secret/my-app/api \
 
 ---
 
-### **Step 3: Configure Vault Agent on Windows**
+### **Step 3: Install RSAT on Client Machines**
 
-#### **3.1 Create Vault Agent Configuration**
+#### **3.1 Install RSAT Active Directory PowerShell Module**
+```powershell
+# On Windows Server (run as Administrator)
+Install-WindowsFeature RSAT-AD-PowerShell
+
+# On Windows 10/11 Client (run as Administrator)
+Add-WindowsCapability -Online -Name RSAT:ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0
+
+# Verify installation
+Get-Module -ListAvailable | Where-Object Name -eq ActiveDirectory
+
+# Import the module
+Import-Module ActiveDirectory
+```
+
+#### **3.2 Install gMSA on Client Machine**
+```powershell
+# Install the gMSA on the client machine
+Install-ADServiceAccount -Identity "vault-gmsa"
+
+# Test gMSA availability (this is the important test)
+Test-ADServiceAccount -Identity "vault-gmsa"
+# Should return True - if it does, the gMSA is working correctly
+
+# Note: Install-ADServiceAccount may show "Access Denied" error
+# This is a known quirk in lab/single-DC setups and can be ignored
+# The Test-ADServiceAccount result is what matters
+```
+
+---
+
+### **Step 4: Configure Vault Agent on Windows**
+
+#### **4.1 Create Vault Agent Configuration**
 ```hcl
 # C:\vault\vault-agent.hcl
 pid_file = "C:\\vault\\pidfile"
@@ -208,7 +242,7 @@ template {
 }
 ```
 
-#### **3.2 Create Secret Templates**
+#### **4.2 Create Secret Templates**
 ```hcl
 # C:\vault\templates\database.tpl
 {{ with secret "secret/my-app/database" }}
@@ -232,7 +266,7 @@ template {
 {{ end }}
 ```
 
-#### **3.3 Create Application Restart Script**
+#### **4.3 Create Application Restart Script**
 ```batch
 @echo off
 REM C:\vault\scripts\restart-app.bat
@@ -244,9 +278,9 @@ echo Application restarted successfully.
 
 ---
 
-### **Step 4: Install Vault Agent as Windows Service**
+### **Step 5: Install Vault Agent as Windows Service**
 
-#### **4.1 Install Vault Agent Service**
+#### **5.1 Install Vault Agent Service**
 ```powershell
 # Create the service
 sc.exe create "VaultAgent" binpath="C:\vault\vault.exe agent -config=C:\vault\vault-agent.hcl" start=auto
@@ -263,7 +297,7 @@ Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedP
 sc.exe start "VaultAgent"
 ```
 
-#### **4.2 Verify Service Installation**
+#### **5.2 Verify Service Installation**
 ```powershell
 # Check service status
 sc.exe query "VaultAgent"
@@ -277,9 +311,9 @@ C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-gmsa-role
 
 ---
 
-### **Step 5: Configure Task Scheduler**
+### **Step 6: Configure Task Scheduler**
 
-#### **5.1 Create Task Scheduler Job**
+#### **6.1 Create Task Scheduler Job**
 ```powershell
 # Create a scheduled task that runs under gMSA
 $action = New-ScheduledTaskAction -Execute "C:\vault\scripts\my-app-task.bat"
@@ -290,7 +324,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "YOURDOMAIN\vault-gmsa$" -Password ""
 ```
 
-#### **5.2 Create Application Task Script**
+#### **6.2 Create Application Task Script**
 ```batch
 @echo off
 REM C:\vault\scripts\my-app-task.bat
@@ -312,9 +346,9 @@ echo Task completed successfully.
 
 ---
 
-### **Step 6: Testing and Verification**
+### **Step 7: Testing and Verification**
 
-#### **6.1 Test Authentication**
+#### **7.1 Test Authentication**
 ```powershell
 # Test gMSA authentication manually
 C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-gmsa-role
@@ -326,7 +360,7 @@ C:\vault\vault.exe token lookup
 C:\vault\vault.exe kv get secret/my-app/database
 ```
 
-#### **6.2 Monitor Vault Agent**
+#### **7.2 Monitor Vault Agent**
 ```powershell
 # Check Vault Agent logs
 Get-Content C:\vault\vault-agent.log -Tail 50
@@ -338,7 +372,7 @@ sc.exe query "VaultAgent"
 dir C:\vault\secrets\
 ```
 
-#### **6.3 Test Task Scheduler Execution**
+#### **7.3 Test Task Scheduler Execution**
 ```powershell
 # Run task manually to test
 Start-ScheduledTask -TaskName "MyApp-SecretRefresh"
@@ -349,9 +383,9 @@ Get-ScheduledTask -TaskName "MyApp-SecretRefresh" | Get-ScheduledTaskInfo
 
 ---
 
-### **Step 7: Production Monitoring**
+### **Step 8: Production Monitoring**
 
-#### **7.1 Health Checks**
+#### **8.1 Health Checks**
 ```bash
 # Check Vault auth method health
 curl -X GET "https://vault.yourdomain.com/v1/auth/gmsa/health?detailed=true"
@@ -360,7 +394,7 @@ curl -X GET "https://vault.yourdomain.com/v1/auth/gmsa/health?detailed=true"
 curl -X GET "https://vault.yourdomain.com/v1/auth/gmsa/metrics"
 ```
 
-#### **7.2 Log Monitoring**
+#### **8.2 Log Monitoring**
 ```powershell
 # Monitor Vault Agent logs
 Get-WinEvent -LogName Application | Where-Object {$_.ProviderName -eq "VaultAgent"} | Select-Object TimeCreated, LevelDisplayName, Message
@@ -425,6 +459,29 @@ Get-ADComputer -Filter * | Select-Object Name, SamAccountName
 # Correct: Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "Vault-Clients"
 ```
 
+**Error: "Access Denied" during Install-ADServiceAccount**
+```powershell
+# This error can be ignored if Test-ADServiceAccount returns True
+Install-ADServiceAccount -Identity "vault-gmsa"  # May show "Access Denied"
+Test-ADServiceAccount -Identity "vault-gmsa"     # Should return True
+
+# If Test-ADServiceAccount returns True, the gMSA is working correctly
+# The "Access Denied" error is a known quirk in lab/single-DC setups
+```
+
+**Error: "Cannot install service account" after group membership changes**
+```powershell
+# Group membership changes require a reboot to take effect
+# 1. Add computer to group
+Add-ADGroupMember -Identity "Vault-Clients" -Members "YOUR-COMPUTER$"
+
+# 2. Reboot the computer
+Restart-Computer
+
+# 3. After reboot, test again
+Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
+```
+
 #### **Authentication Failures**
 ```powershell
 # Check gMSA SPN
@@ -435,6 +492,9 @@ Get-ADServiceAccount -Identity "vault-gmsa" | Get-ADPrincipalGroupMembership
 
 # Test Kerberos ticket request
 klist -li 0x3e7  # Check if service can get tickets
+
+# Test specific SPN ticket issuance
+klist get HTTP/vault.local.lab  # Should show ticket for Vault SPN
 ```
 
 #### **Service Issues**
