@@ -33,6 +33,27 @@ This is the **main production use case** for this plugin: running Vault Agent un
 - Vault Agent binary installed on Windows machine
 - **RSAT Active Directory PowerShell module** installed on client machines
 
+#### **📁 Example Files Available**
+
+This repository includes three ready-to-use PowerShell examples:
+
+1. **`simple-gmsa-task-example.ps1`** - **Quick Start**
+   - Minimal implementation for learning
+   - Basic authentication flow
+   - Perfect for testing and understanding the concept
+
+2. **`gmsa-scheduled-task-example.ps1`** - **Complete Implementation**
+   - Full end-to-end example with detailed explanations
+   - Comprehensive error handling and logging
+   - Manual testing capabilities
+
+3. **`production-gmsa-example.ps1`** - **Production Ready**
+   - Real SPNEGO token generation using .NET HttpClient
+   - Complete application integration (config updates, service restarts)
+   - Comprehensive monitoring and troubleshooting
+
+**Quick Start:** Run `.\simple-gmsa-task-example.ps1` as Administrator to get started immediately!
+
 ---
 
 ### **Step 1: Prepare the gMSA**
@@ -430,7 +451,169 @@ echo Application restarted successfully.
 
 ---
 
-### **Step 5: Install Vault Agent as Windows Service**
+## **🚀 Alternative: PowerShell Scheduled Task Approach**
+
+If you prefer a simpler PowerShell-based approach instead of Vault Agent, you can use scheduled tasks that run under the gMSA identity. This approach is ideal for applications that need periodic secret refresh without the complexity of Vault Agent.
+
+### **Step 5: PowerShell Scheduled Task Setup**
+
+#### **5.1 Choose Your Implementation Level**
+
+We provide three different examples based on your needs:
+
+1. **`simple-gmsa-task-example.ps1`** - Minimal example for learning
+2. **`gmsa-scheduled-task-example.ps1`** - Complete end-to-end implementation
+3. **`production-gmsa-example.ps1`** - Production-ready with real SPNEGO implementation
+
+#### **5.2 Quick Start (Simple Example)**
+
+```powershell
+# Run as Administrator on your Windows client machine
+# Download and execute the simple example:
+
+.\simple-gmsa-task-example.ps1
+```
+
+This creates:
+- ✅ PowerShell script that runs under gMSA identity
+- ✅ Scheduled task that runs daily at 2:00 AM
+- ✅ Basic Vault authentication flow
+- ✅ Secret retrieval and configuration updates
+
+#### **5.3 Production Setup (Recommended)**
+
+```powershell
+# Run as Administrator on your Windows client machine
+# Download and execute the production example:
+
+.\production-gmsa-example.ps1
+```
+
+This creates:
+- ✅ **Real SPNEGO token generation** using .NET HttpClient
+- ✅ **Complete authentication flow** with error handling
+- ✅ **Secret retrieval** from multiple Vault paths
+- ✅ **Application configuration updates** with JSON files
+- ✅ **Service restart capabilities** for your applications
+- ✅ **Comprehensive logging** and status reporting
+- ✅ **Scheduled task** running daily under gMSA identity
+
+#### **5.4 What the Scripts Do**
+
+**Authentication Flow:**
+```powershell
+# 1. Get SPNEGO token using Windows SSPI
+$spnegoToken = Get-SPNEGOToken -SPN "HTTP/vault.local.lab"
+
+# 2. Authenticate to Vault using the token
+$vaultToken = Invoke-VaultLogin -VaultUrl $VaultUrl -Role $Role -SPNEGOToken $spnegoToken
+
+# 3. Retrieve secrets from Vault
+$secrets = Get-VaultSecrets -VaultUrl $VaultUrl -Token $vaultToken -SecretPaths $secretPaths
+
+# 4. Update application configuration files
+Update-ApplicationConfig -Secrets $secrets
+```
+
+**Scheduled Task Creation:**
+```powershell
+# Create action that runs the PowerShell script
+$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-ExecutionPolicy Bypass -File `"$ScriptPath`""
+
+# Create trigger (daily at 2 AM)
+$trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
+
+# Register under gMSA identity (no password needed!)
+Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$" -Password ""
+```
+
+#### **5.5 Prerequisites**
+
+Before running the scripts, ensure:
+
+```powershell
+# 1. gMSA is installed on the client machine
+Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
+
+# 2. Machine is member of Vault-Clients group
+Get-ADGroupMember Vault-Clients | Where-Object {$_.Name -eq "YOUR-COMPUTER-NAME"}
+
+# 3. Vault server is configured and accessible
+Test-NetConnection vault.local.lab -Port 8200
+```
+
+#### **5.6 Customization**
+
+**Modify Secret Paths:**
+```powershell
+# Edit the script to retrieve your specific secrets
+$secretPaths = @(
+    "secret/data/my-app/database",
+    "secret/data/my-app/api",
+    "secret/data/my-app/external-service"
+)
+```
+
+**Change Schedule:**
+```powershell
+# Modify the trigger in the script
+$trigger = New-ScheduledTaskTrigger -Daily -At "03:00"  # 3 AM instead of 2 AM
+# Or use different schedule:
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At "02:00"
+```
+
+**Add Application Restart:**
+```powershell
+# Add your application service restart logic
+if (Get-Service -Name "MyApplication" -ErrorAction SilentlyContinue) {
+    Restart-Service -Name "MyApplication" -Force
+    Write-Host "✅ Application service restarted"
+}
+```
+
+#### **5.7 Monitoring and Troubleshooting**
+
+**Check Task Status:**
+```powershell
+# View task details
+Get-ScheduledTask -TaskName "VaultSecretRefresh"
+
+# Check last run result
+Get-ScheduledTaskInfo -TaskName "VaultSecretRefresh"
+
+# View task history
+Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational | Where-Object {$_.Message -like "*VaultSecretRefresh*"}
+```
+
+**Manual Testing:**
+```powershell
+# Run the task manually
+Start-ScheduledTask -TaskName "VaultSecretRefresh"
+
+# Check configuration files
+Get-Content C:\vault\config\database.json
+Get-Content C:\vault\config\api.json
+```
+
+**Common Issues:**
+- **"Access Denied"**: Run PowerShell as Administrator
+- **"gMSA not found"**: Ensure gMSA is installed: `Test-ADServiceAccount -Identity "vault-gmsa"`
+- **"Authentication failed"**: Check Vault server configuration and network connectivity
+- **"No secrets retrieved"**: Verify secret paths exist in Vault
+
+#### **5.8 Benefits of This Approach**
+
+✅ **Simpler than Vault Agent** - No complex configuration files
+✅ **Direct PowerShell control** - Easy to customize and debug
+✅ **Scheduled execution** - Runs automatically at specified times
+✅ **Zero hardcoded credentials** - Uses gMSA managed passwords
+✅ **Application integration** - Can restart services and update configs
+✅ **Comprehensive logging** - Detailed status and error reporting
+✅ **Flexible scheduling** - Easy to modify run times and frequency
+
+---
+
+### **Step 6: Install Vault Agent as Windows Service**
 
 #### **5.1 Install Vault Agent Service**
 ```powershell
