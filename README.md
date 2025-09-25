@@ -36,34 +36,74 @@ This is the **main production use case** for this plugin: running Vault Agent un
 
 ### **Step 1: Prepare the gMSA**
 
-#### **1.1 Create gMSA in Active Directory**
+#### **1.1 Create KDS Root Key (Required First)**
+```powershell
+# Check if KDS root key exists
+Get-KdsRootKey
+
+# If no KDS root key exists, create one
+# For lab/testing environments (immediate effect):
+Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
+
+# For production environments (10-hour delay):
+Add-KdsRootKey -EffectiveImmediately
+```
+
+#### **1.2 Create gMSA in Active Directory**
 ```powershell
 # Create gMSA (run on domain controller or with AD management tools)
-New-ADServiceAccount -Name "vault-agent-gmsa" -DNSHostName "vault-agent-gmsa.yourdomain.com" -ServicePrincipalNames "HTTP/vault.yourdomain.com"
+# Note: Name must be 15 characters or less
+New-ADServiceAccount -Name "vault-gmsa" -DNSHostName "vault-gmsa.yourdomain.com" -ServicePrincipalNames "HTTP/vault.yourdomain.com"
 
-# Add SPN for Vault server
-setspn -A HTTP/vault.yourdomain.com YOURDOMAIN\vault-agent-gmsa$
-
-# Verify SPN
-setspn -L YOURDOMAIN\vault-agent-gmsa$
+# Verify SPN was created automatically
+setspn -L YOURDOMAIN\vault-gmsa$
 ```
 
-#### **1.2 Grant gMSA Permissions**
+#### **1.3 Create Required AD Groups**
 ```powershell
-# Grant gMSA permission to retrieve its own password
-Add-ADServiceAccount -Identity "vault-agent-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "YOURDOMAIN\vault-agent-gmsa$"
+# Create group for Vault servers (computers that will run Vault)
+New-ADGroup -Name "Vault-Servers" `
+  -SamAccountName "Vault-Servers" `
+  -GroupCategory Security `
+  -GroupScope Global `
+  -Path "CN=Users,DC=local,DC=lab"
 
-# Add gMSA to required AD groups (for policy mapping)
-Add-ADGroupMember -Identity "Vault-Agents" -Members "YOURDOMAIN\vault-agent-gmsa$"
+# Create group for Vault clients (computers that will authenticate)
+New-ADGroup -Name "Vault-Clients" `
+  -SamAccountName "Vault-Clients" `
+  -GroupCategory Security `
+  -GroupScope Global `
+  -Path "CN=Users,DC=local,DC=lab"
+
+# Add your Vault server computer account to Vault-Servers group
+# Replace "YOUR-VAULT-SERVER" with your actual computer name
+Add-ADGroupMember -Identity "Vault-Servers" -Members "YOUR-VAULT-SERVER$"
+
+# Add client computer accounts to Vault-Clients group
+# Replace "YOUR-CLIENT-COMPUTER" with your actual computer name
+Add-ADGroupMember -Identity "Vault-Clients" -Members "YOUR-CLIENT-COMPUTER$"
 ```
 
-#### **1.3 Export Keytab**
+#### **1.4 Grant gMSA Permissions**
+```powershell
+# Grant Vault-Clients group permission to retrieve gMSA password
+Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "Vault-Clients"
+
+# Verify the configuration
+Get-ADServiceAccount vault-gmsa -Properties PrincipalsAllowedToRetrieveManagedPassword
+
+# Verify group membership
+Get-ADGroupMember Vault-Clients
+Get-ADGroupMember Vault-Servers
+```
+
+#### **1.5 Export Keytab**
 ```powershell
 # Export keytab for the gMSA (run on domain controller)
-ktpass -princ HTTP/vault.yourdomain.com@YOURDOMAIN.COM -mapuser YOURDOMAIN\vault-agent-gmsa$ -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out vault-agent.keytab
+ktpass -princ HTTP/vault.yourdomain.com@YOURDOMAIN.COM -mapuser YOURDOMAIN\vault-gmsa$ -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out vault-gmsa.keytab
 
 # Convert to base64 for Vault configuration
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("vault-agent.keytab"))
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("vault-gmsa.keytab"))
 ```
 
 ---
@@ -78,9 +118,9 @@ vault auth enable -path=gmsa vault-plugin-auth-gmsa
 # Configure the auth method
 vault write auth/gmsa/config \
     realm="YOURDOMAIN.COM" \
-    kdc_hosts="dc1.yourdomain.com,dc2.yourdomain.com" \
+    kdcs="dc1.yourdomain.com,dc2.yourdomain.com" \
     spn="HTTP/vault.yourdomain.com" \
-    keytab_path="/etc/vault.d/krb5/vault-agent.keytab" \
+    keytab="$(cat vault-gmsa.keytab.b64)" \
     clock_skew_sec=300 \
     allow_channel_binding=true
 ```
@@ -105,8 +145,8 @@ EOF
 # Use: Get-ADGroup "Vault-Agents" | Select-Object SID
 
 # Create role with group-based access
-vault write auth/gmsa/role/vault-agent-role \
-    name="vault-agent-role" \
+vault write auth/gmsa/role/vault-gmsa-role \
+    name="vault-gmsa-role" \
     allowed_realms="YOURDOMAIN.COM" \
     allowed_spns="HTTP/vault.yourdomain.com" \
     bound_group_sids="S-1-5-21-1234567890-1234567890-1234567890-1234" \
@@ -141,7 +181,7 @@ pid_file = "C:\\vault\\pidfile"
 auto_auth {
     method "gmsa" {
         config = {
-            role = "vault-agent-role"
+            role = "vault-gmsa-role"
         }
     }
 }
@@ -212,12 +252,12 @@ echo Application restarted successfully.
 sc.exe create "VaultAgent" binpath="C:\vault\vault.exe agent -config=C:\vault\vault-agent.hcl" start=auto
 
 # Configure service to run under gMSA
-sc.exe config "VaultAgent" obj="YOURDOMAIN\vault-agent-gmsa$"
+sc.exe config "VaultAgent" obj="YOURDOMAIN\vault-gmsa$"
 sc.exe config "VaultAgent" password=""
 
 # Grant service logon right to gMSA
 # Run this on domain controller or with appropriate permissions
-Set-ADServiceAccount -Identity "vault-agent-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "YOURDOMAIN\vault-agent-gmsa$"
+Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "YOURDOMAIN\Vault-Servers"
 
 # Start the service
 sc.exe start "VaultAgent"
@@ -232,7 +272,7 @@ sc.exe query "VaultAgent"
 Get-WinEvent -LogName Application | Where-Object {$_.ProviderName -eq "VaultAgent"}
 
 # Test authentication manually
-C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-agent-role
+C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-gmsa-role
 ```
 
 ---
@@ -247,7 +287,7 @@ $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
 # Create task with gMSA identity
-Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "YOURDOMAIN\vault-agent-gmsa$" -Password ""
+Register-ScheduledTask -TaskName "MyApp-SecretRefresh" -Action $action -Trigger $trigger -Settings $settings -User "YOURDOMAIN\vault-gmsa$" -Password ""
 ```
 
 #### **5.2 Create Application Task Script**
@@ -277,7 +317,7 @@ echo Task completed successfully.
 #### **6.1 Test Authentication**
 ```powershell
 # Test gMSA authentication manually
-C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-agent-role
+C:\vault\vault.exe auth -method=gmsa -path=gmsa role=vault-gmsa-role
 
 # Verify token and permissions
 C:\vault\vault.exe token lookup
@@ -333,13 +373,65 @@ Get-WinEvent -LogName Application | Where-Object {$_.ProviderName -eq "VaultAgen
 
 ### **🔧 Troubleshooting Common Issues**
 
+#### **Common gMSA Creation Errors**
+
+**Error: "Key does not exist" (-2146893811)**
+```powershell
+# This means KDS root key is missing
+Get-KdsRootKey  # Should return a GUID if KDS key exists
+
+# Create KDS root key (required for gMSA)
+# For lab/testing (immediate effect):
+Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
+
+# For production (10-hour delay):
+Add-KdsRootKey -EffectiveImmediately
+```
+
+**Error: "samAccountName attribute too long"**
+```powershell
+# gMSA names must be 15 characters or less
+# Use shorter names like "vault-gmsa" instead of "vault-agent-gmsa"
+New-ADServiceAccount -Name "vault-gmsa" -DNSHostName "vault-gmsa.yourdomain.com"
+```
+
+**Error: "Add-ADServiceAccount not recognized"**
+```powershell
+# Correct cmdlet is Set-ADServiceAccount, not Add-ADServiceAccount
+Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "YOURDOMAIN\Vault-Servers"
+```
+
+**Error: "Duplicate SPN found"**
+```powershell
+# SPN was already created automatically with New-ADServiceAccount
+# No need to manually add it with setspn
+setspn -L YOURDOMAIN\vault-gmsa$  # Verify SPN exists
+```
+
+**Error: "Cannot find an object with identity"**
+```powershell
+# Computer accounts must be referenced with $ suffix
+# Wrong: Add-ADGroupMember -Identity "Vault-Clients" -Members "EC2AMAZ-UB1QVDL"
+# Correct: Add-ADGroupMember -Identity "Vault-Clients" -Members "EC2AMAZ-UB1QVDL$"
+
+# Find computer accounts in your domain
+Get-ADComputer -Filter * | Select-Object Name, SamAccountName
+```
+
+**Error: "Identity info provided could not be resolved"**
+```powershell
+# Use group name without domain prefix for PrincipalsAllowedToRetrieveManagedPassword
+# Wrong: Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "LOCAL\Vault-Clients"
+# Correct: Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "Vault-Clients"
+```
+
 #### **Authentication Failures**
 ```powershell
 # Check gMSA SPN
-setspn -L YOURDOMAIN\vault-agent-gmsa$
+setspn -L YOURDOMAIN\vault-gmsa$
 
 # Verify gMSA group membership
-Get-ADServiceAccount -Identity "vault-agent-gmsa" | Get-ADPrincipalGroupMembership
+Get-ADServiceAccount -Identity "vault-gmsa" | Get-ADPrincipalGroupMembership
 
 # Test Kerberos ticket request
 klist -li 0x3e7  # Check if service can get tickets
@@ -418,15 +510,44 @@ go build -o vault-plugin-auth-gmsa ./cmd/vault-plugin-auth-gmsa
 
 
 ## Register the plugin
+
+### **Docker Deployment (Recommended)**
+
+For Vault running in Docker containers:
+
+```bash
+# Build Alpine-compatible binary
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o vault-plugin-auth-gmsa-alpine ./cmd/vault-plugin-auth-gmsa
+
+# Copy to Docker container
+docker cp vault-plugin-auth-gmsa-alpine <container-id>:/vault/plugins/vault-plugin-auth-gmsa
+
+# Update Vault configuration to include plugin directory
+echo 'plugin_directory = "/vault/plugins"' >> /data/vault/conf/vault.hcl
+
+# Restart Vault container
+docker restart <container-id>
+
+# Register plugin with correct checksum
+vault write sys/plugins/catalog/auth/vault-plugin-auth-gmsa \
+  sha256="$(sha256sum vault-plugin-auth-gmsa-alpine | awk '{print $1}')" \
+  command='vault-plugin-auth-gmsa'
+
+# Enable auth method
+vault auth enable -path=gmsa vault-plugin-auth-gmsa
+```
+
+### **Traditional Deployment**
+
+For Vault running directly on the host:
+
 ```bash
 # On Vault server
 sha256sum vault-plugin-auth-gmsa > /etc/vault.d/plugins/vault-plugin-auth-gmsa.sha256
 mv vault-plugin-auth-gmsa /etc/vault.d/plugins/
 
-
 vault plugin register -sha256="$(cat /etc/vault.d/plugins/vault-plugin-auth-gmsa.sha256 | awk '{print $1}')" \
 auth vault-plugin-auth-gmsa
-
 
 vault auth enable -path=gmsa vault-plugin-auth-gmsa
 ```
@@ -436,29 +557,15 @@ vault auth enable -path=gmsa vault-plugin-auth-gmsa
 ```bash
 vault write auth/gmsa/config \
 realm=EXAMPLE.COM \
-kdc_hosts="dc1.example.com,dc2.example.com" \
+kdcs="dc1.example.com,dc2.example.com" \
 spn="HTTP/vault.example.com" \
-keytab_path="/etc/vault.d/krb5/vault.keytab" \
-group_policy_map=@group-map.json \
-principal_policy_map=@principal-map.json
+keytab="$(base64 -w 0 /etc/vault.d/krb5/vault.keytab)" \
+allow_channel_binding=true \
+clock_skew_sec=300
 ```
 
 
-**group-map.json**
-```json
-{
-"S-1-5-21-1111111111-2222222222-3333333333-512": ["default", "kv-read"],
-"S-1-5-21-1111111111-2222222222-3333333333-419": ["prod-app"]
-}
-```
-
-
-**principal-map.json** (optional)
-```json
-{
-"APP01$@EXAMPLE.COM": ["app01-policy"]
-}
-```
+**Note**: Group and principal mapping is now handled through roles. See the Role Management API section below for details.
 
 
 ## Client login (Windows workload using gMSA)
