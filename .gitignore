@@ -6,8 +6,9 @@ bin/
 dist/
 coverage.*
 
-# Vault plugin binary
+# Vault plugin binaries
 vault-plugin-auth-gmsa
+vault-plugin-auth-gmsa-alpine
 *.exe
 *.dll
 *.dylib
