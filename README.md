@@ -1135,18 +1135,324 @@ curl -X GET http://vault:8200/v1/auth/gmsa/metrics
 - **Keytab security**: Store keytab securely, rotate regularly, use Vault's file mount with tight ACLs
 
 ## Troubleshooting
-- `KRB_AP_ERR_SKEW`: Fix clock skew / NTP.
-- `invalid spnego encoding`: Ensure the `spnego` field is base64 of the raw SPNEGO blob.
-- `role "..." not found`: Create the role or correct the `role` value.
-- `realm not allowed for role`: Check role's `allowed_realms` or configure normalization rules.
-- `SPN not allowed for role`: Check role's `allowed_spns` or configure normalization rules.
-- `no bound group SID matched`: Verify group SIDs in PAC or adjust role's `bound_group_sids`.
-- `auth method not configured`: Configure `auth/gmsa/config` first.
-- `PAC signature validation failed`: Check keytab configuration and ensure proper SPN/key matching.
-- `no matching key found for SPN`: Verify keytab contains the correct SPN and encryption types.
+
+### Common gMSA Creation Errors
+
+#### Error: "Key does not exist" (-2146893811)
+**Problem**: KDS root key is missing from your AD forest.
+```powershell
+# Check if KDS root key exists
+Get-KdsRootKey  # Should return a GUID if KDS key exists
+
+# Create KDS root key (required for gMSA)
+# For lab/testing (immediate effect):
+Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10))
+
+# For production (10-hour delay):
+Add-KdsRootKey -EffectiveImmediately
+```
+
+#### Error: "samAccountName attribute too long"
+**Problem**: gMSA names must be 15 characters or less.
+```powershell
+# Use shorter names like "vault-gmsa" instead of "vault-agent-gmsa"
+New-ADServiceAccount -Name "vault-gmsa" -DNSHostName "vault-gmsa.yourdomain.com"
+```
+
+#### Error: "Add-ADServiceAccount not recognized"
+**Problem**: Correct cmdlet is `Set-ADServiceAccount`, not `Add-ADServiceAccount`.
+```powershell
+# Correct cmdlet for modifying gMSA properties
+Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "YOURDOMAIN\Vault-Servers"
+```
+
+#### Error: "Duplicate SPN found"
+**Problem**: SPN was already created automatically with `New-ADServiceAccount`.
+```powershell
+# Verify SPN exists (no need to manually add it)
+setspn -L YOURDOMAIN\vault-gmsa$  # Verify SPN exists
+
+# If you need to move SPN to another account, remove it first:
+setspn -D HTTP/vault.local.lab vault-gmsa$
+setspn -A HTTP/vault.local.lab vault-keytab-svc
+```
+
+#### Error: "Cannot find an object with identity"
+**Problem**: Computer accounts must be referenced with `$` suffix.
+```powershell
+# Wrong:
+Add-ADGroupMember -Identity "Vault-Clients" -Members "EC2AMAZ-UB1QVDL"
+
+# Correct:
+Add-ADGroupMember -Identity "Vault-Clients" -Members "EC2AMAZ-UB1QVDL$"
+
+# Find computer accounts in your domain
+Get-ADComputer -Filter * | Select-Object Name, SamAccountName
+```
+
+#### Error: "Identity info provided could not be resolved"
+**Problem**: Use group name without domain prefix for `PrincipalsAllowedToRetrieveManagedPassword`.
+```powershell
+# Wrong:
+Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "LOCAL\Vault-Clients"
+
+# Correct:
+Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedPassword "Vault-Clients"
+```
+
+#### Error: "Access Denied" during Install-ADServiceAccount
+**Problem**: This error can be ignored if `Test-ADServiceAccount` returns `True`.
+```powershell
+Install-ADServiceAccount -Identity "vault-gmsa"  # May show "Access Denied"
+Test-ADServiceAccount -Identity "vault-gmsa"     # Should return True
+
+# If Test-ADServiceAccount returns True, the gMSA is working correctly
+# The "Access Denied" error is a known quirk in lab/single-DC setups
+```
+
+#### Error: "Cannot install service account" after group membership changes
+**Problem**: Group membership changes require a reboot to take effect.
+```powershell
+# 1. Add computer to group
+Add-ADGroupMember -Identity "Vault-Clients" -Members "YOUR-COMPUTER$"
+
+# 2. Reboot the computer
+Restart-Computer
+
+# 3. After reboot, test again
+Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
+```
+
+#### Error: "WARNING: Account vault-gmsa$ is not a user account" during ktpass
+**Problem**: This warning appears when trying to export keytab for gMSA.
+```powershell
+# ALWAYS answer 'n' (no) to avoid breaking the gMSA
+
+# Instead, use one of these alternatives:
+
+# Option 1: Create regular service account for keytab (RECOMMENDED)
+New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@local.lab" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
+setspn -A HTTP/vault.local.lab LOCAL\vault-keytab-svc
+ktpass -princ HTTP/vault.local.lab@local.lab -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+
+# Option 2: Use gMSA directly without keytab export
+# Configure Windows services to run under gMSA identity directly
+```
+
+### RSAT Installation Issues
+
+#### Error: "Install-ADServiceAccount not recognized"
+**Problem**: Active Directory PowerShell module isn't available.
+```powershell
+# On Windows Server (run as Administrator)
+Install-WindowsFeature RSAT-AD-PowerShell
+
+# On Windows 10/11 Client (run as Administrator)
+Add-WindowsCapability -Online -Name RSAT:ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0
+
+# Verify installation
+Get-Module -ListAvailable | Where-Object Name -eq ActiveDirectory
+
+# Import the module
+Import-Module ActiveDirectory
+```
+
+#### Error: "You do not have adequate user rights"
+**Problem**: PowerShell needs to be run as Administrator.
+```powershell
+# Open PowerShell as Administrator
+# Click Start → type PowerShell → right-click → Run as administrator
+
+# Or in current session:
+Start-Process powershell -Verb runAs
+
+# Then run the install again
+Install-WindowsFeature RSAT-AD-PowerShell
+```
+
+### Keytab Generation Issues
+
+#### Error: "Duplicate SPN found" during ktpass
+**Problem**: SPN is already assigned to another account.
+```powershell
+# Remove SPN from gMSA first
+setspn -D HTTP/vault.local.lab vault-gmsa$
+
+# Then assign to keytab service account
+setspn -A HTTP/vault.local.lab vault-keytab-svc
+
+# Re-run ktpass
+ktpass -princ HTTP/vault.local.lab@LOCAL.LAB -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+```
+
+#### Error: "Failed to set property 'userPrincipalName'"
+**Problem**: UPN format doesn't match domain policies.
+```powershell
+# This warning can be ignored - Vault doesn't use UPN for validation
+# What matters is that the SPN → account mapping is correct and the keytab has the matching key
+
+# Verify successful mapping:
+# "Successfully mapped HTTP/vault.local.lab to vault-keytab-svc"
+# "Password successfully set!"
+# "Key created."
+```
+
+### Authentication Failures
+
+#### Error: "Access Denied" during authentication
+**Problem**: Check gMSA SPN and group membership.
+```powershell
+# Check gMSA SPN
+setspn -L YOURDOMAIN\vault-gmsa$
+
+# Verify gMSA group membership
+Get-ADServiceAccount -Identity "vault-gmsa" | Get-ADPrincipalGroupMembership
+
+# Test Kerberos ticket request
+klist -li 0x3e7  # Check if service can get tickets
+
+# Test specific SPN ticket issuance
+klist get HTTP/vault.local.lab  # Should show ticket for Vault SPN
+```
+
+### Vault Plugin Issues
+
+#### Error: "auth method not configured"
+**Problem**: Configure `auth/gmsa/config` first.
+```bash
+vault write auth/gmsa/config \
+  realm="LOCAL.LAB" \
+  kdcs="addc.local.lab" \
+  spn="HTTP/vault.local.lab" \
+  keytab="$(cat /path/to/vault-keytab.b64)" \
+  clock_skew_sec=300 \
+  allow_channel_binding=true
+```
+
+#### Error: "no matching key found for SPN"
+**Problem**: Verify keytab contains the correct SPN and encryption types.
+```bash
+# Check keytab contents
+ktutil -k vault-keytab.keytab list
+
+# Verify SPN mapping
+setspn -L vault-keytab-svc
+```
+
+#### Error: "role not found"
+**Problem**: Create the role or correct the role value.
+```bash
+# Get AD group SID
+Get-ADGroup "Vault-Clients" | Select-Object SID
+
+# Create role with correct SID
+vault write auth/gmsa/role/vault-gmsa-role \
+  allowed_realms="LOCAL.LAB" \
+  allowed_spns="HTTP/vault.local.lab" \
+  bound_group_sids="S-1-5-21-3882383611-320842701-3492440261-1108" \
+  token_policies="vault-agent-policy" \
+  token_type="service" \
+  period=3600 \
+  max_ttl=7200
+```
+
+### Service Issues
+
+#### Error: Service won't start under gMSA
+**Problem**: Check service configuration and permissions.
+```powershell
+# Check service configuration
+sc.exe qc "VaultAgent"
+
+# Check service permissions
+sc.exe sdshow "VaultAgent"
+
+# Restart service
+sc.exe stop "VaultAgent"
+sc.exe start "VaultAgent"
+```
+
+### Network Issues
+
+#### Error: Connection timeouts
+**Problem**: Test connectivity to Vault and domain controllers.
+```powershell
+# Test connectivity to Vault
+Test-NetConnection vault.yourdomain.com -Port 8200
+
+# Test DNS resolution
+nslookup vault.yourdomain.com
+nslookup dc1.yourdomain.com
+```
+
+### General Troubleshooting
+
 - **Health Check**: Use `/health` endpoint to verify plugin status and feature implementation.
 - **Metrics**: Use `/metrics` endpoint to monitor performance and resource usage.
 - **Normalization**: Check normalization settings if realm/SPN matching issues occur.
+- **Clock Skew**: Ensure time sync between Vault and domain controllers.
+- **Logs**: Check Vault audit logs for detailed authentication events.
+
+### Success Verification Steps
+
+After completing the setup, verify everything is working:
+
+#### 1. Verify gMSA Configuration
+```powershell
+# Check gMSA exists and is configured correctly
+Get-ADServiceAccount vault-gmsa -Properties PrincipalsAllowedToRetrieveManagedPassword
+
+# Verify group membership
+Get-ADGroupMember Vault-Clients
+
+# Test gMSA on client machine
+Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
+```
+
+#### 2. Verify Keytab Generation
+```powershell
+# Check SPN mapping
+setspn -L vault-keytab-svc  # Should show HTTP/vault.local.lab
+
+# Verify keytab was created
+dir vault-keytab.keytab  # Should exist
+
+# Check base64 encoding
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("vault-keytab.keytab")) | Out-File vault-keytab.b64
+```
+
+#### 3. Verify Vault Configuration
+```bash
+# Check auth method is enabled
+vault auth list
+
+# Verify configuration
+vault read auth/gmsa/config
+
+# Check role exists
+vault read auth/gmsa/role/vault-gmsa-role
+```
+
+#### 4. Test Authentication Flow
+```powershell
+# On client machine, test Kerberos ticket request
+klist get HTTP/vault.local.lab  # Should show ticket for Vault SPN
+
+# Test Vault authentication (when running under gMSA identity)
+# This would be done by your application running under the gMSA
+```
+
+#### 5. Expected Final Architecture
+```
+✅ gMSA (vault-gmsa$) created and installed on Windows clients
+✅ Regular service account (vault-keytab-svc) created for keytab generation
+✅ SPN (HTTP/vault.local.lab) assigned to keytab service account
+✅ Keytab exported and configured in Vault plugin
+✅ Vault-Clients group contains client computer accounts
+✅ gMSA allows Vault-Clients group to retrieve managed password
+✅ Vault plugin validates tokens using keytab from regular service account
+✅ Clients authenticate using gMSA, Vault validates using keytab
+```
 
 **Note**: Current implementation includes comprehensive test coverage with synthetic PAC data. Production deployment should include integration testing with real Kerberos infrastructure.
 
