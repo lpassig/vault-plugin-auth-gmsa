@@ -13,7 +13,7 @@ param(
     [string]$VaultRole = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
-    [string]$ConfigOutputDir = "C:\vault\config",
+    [string]$ConfigOutputDir = "C:\vault-client\config",
     [switch]$CreateScheduledTask = $false,
     [string]$TaskName = "VaultClientApp"
 )
@@ -313,8 +313,8 @@ function Create-ScheduledTask {
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
         
         # Register task under gMSA identity with correct LogonType
-        # Key: Use LogonType ServiceAccount for gMSA (no password stored)
-        $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+        # Key: Use LogonType Password for gMSA (Windows fetches password from AD)
+        $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password -RunLevel Highest
         
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
         
