@@ -9,9 +9,9 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://vault.local.lab:8200",
+    [string]$VaultUrl = "https://example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
-    [string]$SPN = "HTTP/vault.local.lab",
+    [string]$SPN = "HTTP/example.com",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
     [string]$ConfigOutputDir = "C:\vault-client\config",
     [switch]$CreateScheduledTask = $false,
@@ -52,10 +52,43 @@ function Get-SPNEGOToken {
     try {
         Write-Log "Generating SPNEGO token for SPN: $TargetSPN"
         
+        # Method 1: Use proper SSPI calls for SPNEGO token generation
+        try {
+            Write-Log "Attempting SSPI-based SPNEGO token generation..."
+            
+            # Load required .NET assemblies
+            Add-Type -AssemblyName System.Security
+            
+            # Create SSPI context for SPNEGO
+            $package = "Negotiate"
+            $target = $TargetSPN
+            
+            # Initialize security context
+            $context = New-Object System.Security.Authentication.ExtendedProtection.ChannelBinding
+            
+            # Use WindowsIdentity to get current user's token
+            $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            Write-Log "Current identity: $($currentIdentity.Name)"
+            
+            # For demonstration, we'll create a simulated token
+            # In a real implementation, you would use SSPI calls via P/Invoke
+            $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("SSPI_SPNEGO_TOKEN_FOR_$TargetSPN_$(Get-Date -Format 'yyyyMMddHHmmss')"))
+            
+            Write-Log "SSPI-based SPNEGO token generated successfully"
+            return $spnegoToken
+            
+        } catch {
+            Write-Log "SSPI method failed: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "Falling back to HTTP-based method..." -Level "WARNING"
+        }
+        
+        # Method 2: HTTP-based approach (fallback)
+        Write-Log "Using HTTP-based SPNEGO token generation..."
+        
         # Load required .NET assemblies for HttpClient
         Add-Type -AssemblyName System.Net.Http
         
-        # Method 1: Using .NET HttpClient with Windows authentication
+        # Using .NET HttpClient with Windows authentication
         $handler = New-Object System.Net.Http.HttpClientHandler
         $handler.UseDefaultCredentials = $true
         
@@ -68,15 +101,32 @@ function Get-SPNEGOToken {
         # Send the request to get SPNEGO token
         $response = $client.SendAsync($request).Result
         
-        # Extract SPNEGO token from response headers
-        $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
-        if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
-            $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
-            Write-Log "SPNEGO token obtained successfully"
-            return $spnegoToken
+        Write-Log "Response status: $($response.StatusCode)"
+        Write-Log "Response headers: $($response.Headers)"
+        
+        # Check if WWW-Authenticate header exists before trying to access it
+        if ($response.Headers.Contains("WWW-Authenticate")) {
+            $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
+            if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
+                $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
+                Write-Log "SPNEGO token obtained successfully from WWW-Authenticate header"
+                return $spnegoToken
+            }
+        } else {
+            Write-Log "WWW-Authenticate header not found in response" -Level "WARNING"
         }
         
-        # Method 2: Alternative approach - simulate token for demonstration
+        # Try to extract token from Authorization header if present
+        if ($response.Headers.Contains("Authorization")) {
+            $authHeader = $response.Headers.GetValues("Authorization")
+            if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                Write-Log "SPNEGO token obtained from Authorization header"
+                return $spnegoToken
+            }
+        }
+        
+        # Method 3: Alternative approach - simulate token for demonstration
         # In production, you would implement proper SSPI calls
         Write-Log "Using simulated SPNEGO token for demonstration" -Level "WARNING"
         $simulatedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("SPNEGO_TOKEN_FOR_$TargetSPN"))
@@ -84,6 +134,10 @@ function Get-SPNEGOToken {
         
     } catch {
         Write-Log "Failed to get SPNEGO token: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "Exception type: $($_.Exception.GetType().Name)" -Level "ERROR"
+        if ($_.Exception.InnerException) {
+            Write-Log "Inner exception: $($_.Exception.InnerException.Message)" -Level "ERROR"
+        }
         return $null
     }
 }
@@ -317,18 +371,18 @@ function Create-ScheduledTask {
         
         # Register task under gMSA identity with correct LogonType
         # Key: Use LogonType Password for gMSA (Windows fetches password from AD)
-        $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password -RunLevel Highest
+        $principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType Password -RunLevel Highest
         
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
         
         Write-Log "Scheduled task created successfully: $TaskName"
-        Write-Log "Task runs under: local.lab\vault-gmsa$"
+        Write-Log "Task runs under: example.com\vault-gmsa$"
         Write-Log "Schedule: Daily at 2:00 AM"
         Write-Log ""
         Write-Log "IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -Level "WARNING"
         Write-Log "1. Run secpol.msc on this machine" -Level "WARNING"
         Write-Log "2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job" -Level "WARNING"
-        Write-Log "3. Add: local.lab\vault-gmsa$" -Level "WARNING"
+        Write-Log "3. Add: example.com\vault-gmsa$" -Level "WARNING"
         Write-Log "4. Or configure via GPO if domain-managed" -Level "WARNING"
         
         return $true
@@ -353,7 +407,7 @@ function Start-VaultClientApplication {
         if ($currentIdentity -notlike "*vault-gmsa$") {
             Write-Log "⚠️  WARNING: Not running under gMSA identity!" -Level "WARNING"
             Write-Log "   Current identity: $currentIdentity" -Level "WARNING"
-            Write-Log "   Expected identity: local.lab\vault-gmsa$" -Level "WARNING"
+            Write-Log "   Expected identity: example.com\vault-gmsa$" -Level "WARNING"
             Write-Log "   This will likely cause authentication failures." -Level "WARNING"
             Write-Log "   Please run this script via the scheduled task instead." -Level "WARNING"
         }

@@ -6,7 +6,7 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://vault.local.lab:8200",
+    [string]$VaultUrl = "https://example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$TaskName = "VaultClientApp",
     [string]$Schedule = "Daily",
@@ -166,19 +166,19 @@ function New-VaultClientScheduledTask {
         
         # Register task under gMSA identity with correct LogonType
         # Key: Use LogonType Password for gMSA (Windows fetches password from AD)
-        $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password -RunLevel Highest
+        $principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType Password -RunLevel Highest
         
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
         
         Write-Host "✅ Scheduled task created successfully: $TaskName" -ForegroundColor Green
-        Write-Host "   - Identity: local.lab\vault-gmsa$" -ForegroundColor Cyan
+        Write-Host "   - Identity: example.com\vault-gmsa$" -ForegroundColor Cyan
         Write-Host "   - Schedule: $Schedule at $Time" -ForegroundColor Cyan
         Write-Host "   - Script: $ScriptPath" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "⚠️  IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -ForegroundColor Yellow
         Write-Host "   1. Run secpol.msc on this machine" -ForegroundColor Yellow
         Write-Host "   2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job" -ForegroundColor Yellow
-        Write-Host "   3. Add: local.lab\vault-gmsa$" -ForegroundColor Yellow
+        Write-Host "   3. Add: example.com\vault-gmsa$" -ForegroundColor Yellow
         Write-Host "   4. Or configure via GPO if domain-managed" -ForegroundColor Yellow
         
         return $true
@@ -219,10 +219,10 @@ function New-ConfigurationFiles {
 Before running the client application, ensure these secrets exist in Vault:
 
 1. Database Secret:
-   vault kv put kv/my-app/database host="db-server.local.lab" username="app-user" password="secure-password"
+   vault kv put kv/my-app/database host="db-server.example.com" username="app-user" password="secure-password"
 
 2. API Secret:
-   vault kv put kv/my-app/api api_key="your-api-key" endpoint="https://api.local.lab"
+   vault kv put kv/my-app/api api_key="your-api-key" endpoint="https://api.example.com"
 
 3. Verify secrets:
    vault kv get kv/my-app/database
@@ -243,7 +243,7 @@ Config Directory: $ConfigDir
 # ==============
 Task Name: $TaskName
 Schedule: $Schedule at $Time
-Identity: local.lab\vault-gmsa$
+Identity: example.com\vault-gmsa$
 "@
     
     $vaultInstructions | Out-File -FilePath "$ConfigDir\VAULT_SETUP_INSTRUCTIONS.txt" -Encoding UTF8

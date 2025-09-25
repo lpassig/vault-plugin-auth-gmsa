@@ -15,7 +15,7 @@
 $scriptContent = @'
 # Simple Vault authentication script (runs under gMSA)
 param(
-    [string]$VaultUrl = "https://vault.local.lab:8200",
+    [string]$VaultUrl = "https://example.com:8200",
     [string]$Role = "vault-gmsa-role"
 )
 
@@ -87,10 +87,10 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 # =============================================================================
 
 try {
-    Register-ScheduledTask -TaskName "VaultAuthTask" -Action $action -Trigger $trigger -Settings $settings -User "local.lab\vault-gmsa$" -Password ""
+    Register-ScheduledTask -TaskName "VaultAuthTask" -Action $action -Trigger $trigger -Settings $settings -User "example.com\vault-gmsa$" -Password ""
     
     Write-Host "✅ Scheduled task 'VaultAuthTask' created successfully!" -ForegroundColor Green
-    Write-Host "   - Runs under: local.lab\vault-gmsa$" -ForegroundColor Cyan
+    Write-Host "   - Runs under: example.com\vault-gmsa$" -ForegroundColor Cyan
     Write-Host "   - Schedule: Daily at 2:00 AM" -ForegroundColor Cyan
     Write-Host "   - Script: $scriptPath" -ForegroundColor Cyan
     
