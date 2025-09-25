@@ -471,6 +471,51 @@ echo Application restarted successfully.
 
 The **client application approach** is the most practical way to use this plugin. It involves creating a PowerShell application that runs as a scheduled task under gMSA identity and reads secrets from Vault.
 
+### **⚠️ Critical gMSA Scheduled Task Requirements**
+
+Based on extensive testing and troubleshooting, here are the **essential requirements** for gMSA scheduled tasks:
+
+#### **1. Correct LogonType**
+```powershell
+# ✅ CORRECT: Use LogonType Password for gMSA
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password -RunLevel Highest
+
+# ❌ WRONG: Don't use ServiceAccount or Interactive
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount  # This fails!
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Interactive     # This fails!
+```
+
+#### **2. Required User Rights**
+The gMSA must have these rights on the client machine:
+- **"Log on as a batch job"** (via `secpol.msc` or GPO)
+- **"Log on as a service"** (for some scenarios)
+
+#### **3. Domain Configuration**
+- gMSA must be properly configured in Active Directory
+- Client computer must be in the `PrincipalsAllowedToRetrieveManagedPassword` group
+- Domain controller must have KDS root key configured
+
+#### **4. Common Gotchas**
+- **No password parameter**: Never use `-Password ""` with gMSA
+- **Domain prefix**: Use full domain name (`local.lab\vault-gmsa$`)
+- **Path permissions**: Ensure gMSA can write to log directories
+- **PowerShell execution**: May need batch file wrapper for complex scripts
+
+#### **5. Microsoft Documentation Reference**
+
+According to Microsoft's official documentation for Windows Server 2012 gMSA scheduled tasks:
+
+```powershell
+# Official Microsoft approach for gMSA scheduled tasks
+$principal = New-ScheduledTaskPrincipal -UserID "child\myAdminAccount$" -LogonType Password
+```
+
+**Key Points:**
+- Use `-LogonType Password` (not `ServiceAccount` or `Interactive`)
+- The word "Password" tells Windows to retrieve the gMSA password from AD
+- No actual password is provided - Windows fetches it automatically
+- This is the **only** supported method for gMSA scheduled tasks in PowerShell
+
 ### **Why This Approach?**
 
 ✅ **Simple Setup** - One script handles everything  
@@ -506,6 +551,135 @@ C:\vault-client\config\
 ├── api-config.json         # API credentials and endpoints
 ├── .env                    # Environment variables for other apps
 └── vault-client.log        # Complete execution log
+```
+
+---
+
+## **🔧 Comprehensive Troubleshooting Guide**
+
+### **Common Issues and Solutions**
+
+#### **Issue 1: "User was not logged on when launching conditions were met"**
+
+**Symptoms:**
+- Task Scheduler error: "User 'LOCAL\vault-gmsa$' was not logged on"
+- Task fails to start with error code 267011
+
+**Solutions:**
+1. **Grant "Log on as a batch job" right:**
+   ```powershell
+   # Run secpol.msc as Administrator
+   # Navigate to: Local Policies → User Rights Assignment → Log on as a batch job
+   # Add: local.lab\vault-gmsa$
+   ```
+
+2. **Use correct LogonType:**
+   ```powershell
+   # ✅ CORRECT
+   $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password
+   
+   # ❌ WRONG
+   $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount
+   ```
+
+#### **Issue 2: PowerShell Execution Errors**
+
+**Symptoms:**
+- Return code 2147942401 (0x80070001)
+- Script fails to run in gMSA context
+
+**Solutions:**
+1. **Use batch file wrapper:**
+   ```batch
+   @echo off
+   cd /d "C:\vault-client\scripts"
+   powershell.exe -ExecutionPolicy Bypass -NoProfile -File "vault-client-app.ps1"
+   ```
+
+2. **Check path permissions:**
+   ```powershell
+   # Ensure gMSA can write to log directories
+   icacls "C:\vault-client" /grant "local.lab\vault-gmsa$":F /T
+   ```
+
+#### **Issue 3: Domain Mismatch**
+
+**Symptoms:**
+- Task shows `LOCAL\vault-gmsa$` instead of `local.lab\vault-gmsa$`
+- Authentication failures
+
+**Solutions:**
+1. **Use full domain name:**
+   ```powershell
+   $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password
+   ```
+
+2. **Verify gMSA domain:**
+   ```powershell
+   Get-ADServiceAccount -Identity "vault-gmsa" | Select-Object DistinguishedName, SamAccountName
+   ```
+
+#### **Issue 4: gMSA Cannot Retrieve Password**
+
+**Symptoms:**
+- `Test-ADServiceAccount` returns `False`
+- "Access Denied" errors
+
+**Solutions:**
+1. **Check group membership:**
+   ```powershell
+   Get-ADServiceAccount -Identity "vault-gmsa" -Properties PrincipalsAllowedToRetrieveManagedPassword
+   Get-ADGroupMember -Identity "Vault-Clients" | Where-Object {$_.SamAccountName -eq "YOURCOMPUTER$"}
+   ```
+
+2. **Verify KDS root key:**
+   ```powershell
+   Get-KdsRootKey
+   # If empty, create one:
+   Add-KdsRootKey -EffectiveImmediately
+   ```
+
+#### **Issue 5: SPNEGO Token Generation Fails**
+
+**Symptoms:**
+- "Failed to get SPNEGO token" errors
+- Manual execution works, scheduled task fails
+
+**Solutions:**
+1. **Run under gMSA identity:**
+   ```powershell
+   # Manual execution runs under user account - this will fail
+   .\vault-client-app.ps1
+   
+   # Scheduled task runs under gMSA - this will work
+   Start-ScheduledTask -TaskName "VaultClientApp"
+   ```
+
+2. **Verify Kerberos tickets:**
+   ```powershell
+   klist get HTTP/vault.local.lab
+   ```
+
+### **Diagnostic Commands**
+
+```powershell
+# Check task configuration
+$task = Get-ScheduledTask -TaskName "VaultClientApp"
+$task.Principal | Format-List *
+$task.Settings | Format-List *
+
+# Check task execution history
+Get-WinEvent -LogName "Microsoft-Windows-TaskScheduler/Operational" -MaxEvents 10 | Where-Object {$_.Message -like "*VaultClientApp*"}
+
+# Test gMSA functionality
+Test-ADServiceAccount -Identity "vault-gmsa"
+klist get HTTP/vault.local.lab
+
+# Check user rights
+whoami /priv | findstr -i "batch\|logon"
+
+# Verify domain connectivity
+Test-NetConnection -ComputerName "addc.local.lab" -Port 88
 ```
 
 ---
@@ -1739,5 +1913,34 @@ go version   # ensure go1.25+
 go mod tidy
 go build ./...
 ```
+
+---
+
+## **📋 Summary of Key Learnings**
+
+Through extensive testing and troubleshooting, we've identified the critical requirements for gMSA scheduled tasks:
+
+### **✅ What Works**
+1. **`-LogonType Password`** - The only correct LogonType for gMSA scheduled tasks
+2. **"Log on as a batch job" rights** - Required on each client machine
+3. **Full domain names** - Use `local.lab\vault-gmsa$` not just `vault-gmsa$`
+4. **Batch file wrappers** - More reliable than direct PowerShell execution
+5. **Proper path permissions** - Ensure gMSA can write to log directories
+
+### **❌ What Doesn't Work**
+1. **`-LogonType ServiceAccount`** - Causes authentication failures
+2. **`-LogonType Interactive`** - Default but wrong for gMSA
+3. **`-Password ""` parameter** - Never use with gMSA
+4. **Manual script execution** - Runs under wrong identity context
+5. **Missing user rights** - Causes "user not logged on" errors
+
+### **🎯 Success Indicators**
+- Task Scheduler shows: "Task Scheduler launched action 'PowerShell.exe'"
+- Return code: `0` (success)
+- Log files created successfully
+- Secrets retrieved from Vault
+- Authentication under gMSA identity
+
+---
 
 License: see `LICENSE`.
