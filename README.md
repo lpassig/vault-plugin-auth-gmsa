@@ -146,49 +146,114 @@ If you're running Vault on Windows, you can configure the Vault service to run d
 
 ---
 
-### **Step 1.6: Using gMSA with Vault (Advanced)**
+### **Step 1.6: Client-Side gMSA Usage (The Correct Approach)**
 
-If you specifically need to use the gMSA with Vault, here are the approaches:
+The gMSA is designed to be used by **clients** (Windows machines) to authenticate against Vault. Here's how it works:
 
-#### **Option A: Force ktpass with gMSA (Use with Caution)**
-```powershell
-# ⚠️ WARNING: This will reset the gMSA password and may break existing services
-# Only use in lab environments or when you can accept downtime
-
-# Force ktpass to reset the gMSA password
-ktpass -princ HTTP/vault.local.lab@local.lab -mapuser LOCAL\vault-gmsa$ -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass * -out vault-gmsa.keytab
-
-# When prompted "Reset vault-gmsa$'s password [y/n]?", answer 'y'
-# This will break any existing services using the gMSA until they restart
+#### **Architecture Overview**
+```
+┌─────────────────┐    SPNEGO Token     ┌─────────────────┐
+│   Windows       │ ──────────────────► │   Vault Server  │
+│   Client        │                     │   (Linux/Docker)│
+│   (uses gMSA)   │                     │                 │
+└─────────────────┘                     └─────────────────┘
+        │                                        │
+        │                                        │
+        ▼                                        ▼
+┌─────────────────┐                     ┌─────────────────┐
+│   gMSA:         │                     │   Keytab:       │
+│   vault-gmsa$   │                     │   vault-keytab- │
+│   (for clients) │                     │   svc (for      │
+│                 │                     │   validation)   │
+└─────────────────┘                     └─────────────────┘
 ```
 
-#### **Option B: Use gMSA with Windows Service (Recommended)**
+#### **Client-Side gMSA Configuration**
 ```powershell
-# Configure Vault to run as a Windows service under the gMSA
-# This is the proper way to use gMSAs - no keytab needed
+# On each Windows client machine that needs to authenticate to Vault:
 
-# 1. Install Vault as a Windows service
-sc.exe create "Vault" binpath="C:\vault\vault.exe server -config=C:\vault\vault.hcl" start=auto
+# 1. Install the gMSA on the client
+Install-ADServiceAccount -Identity "vault-gmsa"
 
-# 2. Configure service to run under gMSA
-sc.exe config "Vault" obj="local.lab\vault-gmsa$"
-sc.exe config "Vault" password=""
+# 2. Test that the client can use the gMSA
+Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
 
-# 3. Start the service
-sc.exe start "Vault"
+# 3. Configure your application to run under the gMSA
+# Option A: Run as Windows service under gMSA
+sc.exe create "MyApp" binpath="C:\myapp\myapp.exe" start=auto
+sc.exe config "MyApp" obj="local.lab\vault-gmsa$"
+sc.exe config "MyApp" password=""
+
+# Option B: Run as scheduled task under gMSA
+Register-ScheduledTask -TaskName "MyApp-Task" -Action $action -User "local.lab\vault-gmsa$" -Password ""
 ```
 
-#### **Option C: Extract gMSA Password Using LSA Secrets**
+#### **How Client Authentication Works**
+1. **Client application** runs under the gMSA identity (`local.lab\vault-gmsa$`)
+2. **Windows automatically** retrieves the gMSA's managed password from AD
+3. **Client obtains** a Kerberos ticket for `HTTP/vault.local.lab` using the gMSA
+4. **Client sends** SPNEGO token to Vault's `/auth/gmsa/login` endpoint
+5. **Vault validates** the token using the keytab from the regular service account
+6. **Vault issues** a Vault token based on the client's group memberships
+
+#### **Client Authentication Example (PowerShell)**
 ```powershell
-# ⚠️ ADVANCED TECHNIQUE - Use only in lab environments
-# This accesses Windows LSA secrets directly
+# Example: Client application authenticating to Vault using gMSA
+# This would be run by an application running under the gMSA identity
 
-# Get the gMSA password from LSA secrets
-$gmsaSid = (Get-ADServiceAccount -Identity "vault-gmsa").SID.Value
-$lsaSecret = [System.Security.Principal.SecurityIdentifier]::new($gmsaSid)
+# 1. Get SPNEGO token for Vault
+$spnegoToken = [System.Convert]::ToBase64String($spnegoBytes)
 
-# This requires additional PowerShell modules and elevated privileges
-# Implementation details vary by Windows version
+# 2. Authenticate to Vault
+$authResponse = Invoke-RestMethod -Method POST -Uri "https://vault.local.lab/v1/auth/gmsa/login" -Body (@{
+    role = "vault-gmsa-role"
+    spnego = $spnegoToken
+} | ConvertTo-Json) -ContentType "application/json"
+
+# 3. Use the Vault token
+$vaultToken = $authResponse.auth.client_token
+$headers = @{ "X-Vault-Token" = $vaultToken }
+
+# 4. Access secrets
+$secrets = Invoke-RestMethod -Method GET -Uri "https://vault.local.lab/v1/secret/my-app/database" -Headers $headers
+```
+
+#### **Client Authentication Example (C#/.NET)**
+```csharp
+// Example: C# application using gMSA to authenticate to Vault
+using System;
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+
+public class VaultClient
+{
+    private readonly HttpClient _httpClient;
+    private readonly string _vaultUrl;
+    
+    public async Task<string> AuthenticateWithGMSA(string role)
+    {
+        // Get SPNEGO token (this would use Windows SSPI)
+        var spnegoToken = GetSpnegoToken("HTTP/vault.local.lab");
+        
+        // Authenticate to Vault
+        var authRequest = new
+        {
+            role = role,
+            spnego = Convert.ToBase64String(spnegoToken)
+        };
+        
+        var json = JsonConvert.SerializeObject(authRequest);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        
+        var response = await _httpClient.PostAsync($"{_vaultUrl}/v1/auth/gmsa/login", content);
+        var authResponse = await response.Content.ReadAsStringAsync();
+        
+        // Extract Vault token
+        var token = JsonConvert.DeserializeObject<dynamic>(authResponse).auth.client_token;
+        return token;
+    }
+}
 ```
 
 ---
@@ -200,15 +265,18 @@ $lsaSecret = [System.Security.Principal.SecurityIdentifier]::new($gmsaSid)
 # Enable the gMSA auth method
 vault auth enable -path=gmsa vault-plugin-auth-gmsa
 
-# Configure the auth method
+# Configure the auth method using the regular service account keytab
+# This keytab is used to VALIDATE tokens from clients using the gMSA
 vault write auth/gmsa/config \
-    realm="YOURDOMAIN.COM" \
-    kdcs="dc1.yourdomain.com,dc2.yourdomain.com" \
-    spn="HTTP/vault.yourdomain.com" \
-    keytab="$(cat vault-gmsa.keytab.b64)" \
+    realm="local.lab" \
+    kdcs="dc1.local.lab,dc2.local.lab" \
+    spn="HTTP/vault.local.lab" \
+    keytab="$(cat vault-keytab.keytab.b64)" \
     clock_skew_sec=300 \
     allow_channel_binding=true
 ```
+
+**Important**: The Vault server uses the **regular service account keytab** (`vault-keytab-svc`) to validate Kerberos tokens from clients that are using the **gMSA** (`vault-gmsa$`). Both accounts share the same SPN (`HTTP/vault.local.lab`).
 
 #### **2.2 Create Policy for Secrets**
 ```bash
