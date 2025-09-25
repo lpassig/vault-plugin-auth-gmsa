@@ -341,7 +341,17 @@ function Create-ScheduledTask {
 function Start-VaultClientApplication {
     try {
         Write-Log "=== Vault Client Application Started ===" -Level "INFO"
-        Write-Log "Running under identity: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)" -Level "INFO"
+        $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        Write-Log "Running under identity: $currentIdentity" -Level "INFO"
+        
+        # Check if running under gMSA identity
+        if ($currentIdentity -notlike "*vault-gmsa$") {
+            Write-Log "⚠️  WARNING: Not running under gMSA identity!" -Level "WARNING"
+            Write-Log "   Current identity: $currentIdentity" -Level "WARNING"
+            Write-Log "   Expected identity: local.lab\vault-gmsa$" -Level "WARNING"
+            Write-Log "   This will likely cause authentication failures." -Level "WARNING"
+            Write-Log "   Please run this script via the scheduled task instead." -Level "WARNING"
+        }
         Write-Log "Vault URL: $VaultUrl" -Level "INFO"
         Write-Log "Vault Role: $VaultRole" -Level "INFO"
         Write-Log "SPN: $SPN" -Level "INFO"

@@ -274,12 +274,23 @@ function Test-Setup {
         
         # Test run the script manually
         Write-Host "Running application test..." -ForegroundColor Yellow
-        $testResult = & $ScriptPath -VaultUrl $VaultUrl -VaultRole $VaultRole -SecretPaths $SecretPaths
         
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "✅ Application test completed successfully" -ForegroundColor Green
+        # Test by running the scheduled task (which runs under gMSA identity)
+        Write-Host "Starting scheduled task to test gMSA authentication..." -ForegroundColor Cyan
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        
+        # Wait a moment for the task to start
+        Start-Sleep -Seconds 3
+        
+        # Check if the task is running
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($taskInfo) {
+            Write-Host "✅ Scheduled task test initiated successfully" -ForegroundColor Green
+            Write-Host "   - Task State: $($taskInfo.State)" -ForegroundColor Cyan
+            Write-Host "   - Last Run: $($taskInfo.LastRunTime)" -ForegroundColor Cyan
+            Write-Host "   - Check logs at: $ConfigOutputDir\vault-client.log" -ForegroundColor Cyan
         } else {
-            Write-Host "⚠️ Application test completed with warnings (check logs)" -ForegroundColor Yellow
+            Write-Host "⚠️ Could not verify scheduled task execution" -ForegroundColor Yellow
         }
         
         return $true
@@ -342,6 +353,10 @@ function Start-Setup {
         Write-Host "   Get-Content '$($dirs.ConfigDir)\vault-client.log'" -ForegroundColor Gray
         Write-Host "4. Check output files:" -ForegroundColor White
         Write-Host "   Get-ChildItem '$($dirs.ConfigDir)'" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "⚠️  IMPORTANT: The application MUST run under gMSA identity to work properly." -ForegroundColor Yellow
+        Write-Host "   Manual execution (running the script directly) will fail because it runs under your user account." -ForegroundColor Yellow
+        Write-Host "   Always use the scheduled task for testing and production use." -ForegroundColor Yellow
         Write-Host ""
         Write-Host "The application will run automatically $Schedule at $Time under gMSA identity!" -ForegroundColor Green
     } else {
