@@ -52,9 +52,9 @@ function Get-SPNEGOToken {
     try {
         Write-Log "Generating SPNEGO token for SPN: $TargetSPN"
         
-        # Method 1: Use proper Kerberos token generation
+        # Method 1: Use HttpClient with Windows authentication to get real SPNEGO token
         try {
-            Write-Log "Attempting Kerberos-based SPNEGO token generation..."
+            Write-Log "Attempting SPNEGO token generation using HttpClient with Windows auth..."
             
             # Use WindowsIdentity to get current user's token
             $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -74,18 +74,56 @@ function Get-SPNEGOToken {
                 Write-Log "Could not check Kerberos tickets: $($_.Exception.Message)" -Level "WARNING"
             }
             
-            # For now, create a more realistic token structure
-            # In production, you would extract the actual Kerberos ticket
-            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-            $tokenData = "KERBEROS_TOKEN_FOR_$TargetSPN_$timestamp"
-            $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($tokenData))
+            # Use HttpClient with Windows authentication to trigger SPNEGO negotiation
+            Add-Type -AssemblyName System.Net.Http
             
-            Write-Log "Kerberos-based SPNEGO token generated successfully"
-            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
-            return $spnegoToken
+            $handler = New-Object System.Net.Http.HttpClientHandler
+            $handler.UseDefaultCredentials = $true
+            
+            $client = New-Object System.Net.Http.HttpClient($handler)
+            $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+            
+            # Try to get a real SPNEGO token by making a request that requires authentication
+            $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
+            
+            try {
+                $response = $client.SendAsync($request).Result
+                Write-Log "Response status: $($response.StatusCode)"
+                
+                # Check if we got an Authorization header with SPNEGO token
+                if ($response.RequestMessage.Headers.Contains("Authorization")) {
+                    $authHeader = $response.RequestMessage.Headers.GetValues("Authorization")
+                    if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                        Write-Log "Real SPNEGO token obtained from Authorization header"
+                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
+                        return $spnegoToken
+                    }
+                }
+                
+                # If we get 401, that's expected - we need to extract the token from the request
+                if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+                    Write-Log "Received 401 Unauthorized - checking for SPNEGO token in request"
+                    
+                    # The HttpClient should have automatically added the Authorization header
+                    # Let's check if it's there
+                    if ($response.RequestMessage.Headers.Contains("Authorization")) {
+                        $authHeader = $response.RequestMessage.Headers.GetValues("Authorization")
+                        if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                            $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                            Write-Log "Real SPNEGO token extracted from request"
+                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
+                            return $spnegoToken
+                        }
+                    }
+                }
+                
+            } catch {
+                Write-Log "HttpClient request failed: $($_.Exception.Message)" -Level "WARNING"
+            }
             
         } catch {
-            Write-Log "Kerberos method failed: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "HttpClient method failed: $($_.Exception.Message)" -Level "WARNING"
             Write-Log "Falling back to HTTP-based method..." -Level "WARNING"
         }
         
