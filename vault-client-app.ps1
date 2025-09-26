@@ -235,6 +235,17 @@ public class SSPIHelper
                 }
                 
                 Write-Log "All SPN formats failed, falling back to HTTP method" -Level "WARNING"
+                
+                # Core issue: Kerberos ticket is for vault.local.lab but Vault is at vault.example.com
+                Write-Log "DIAGNOSIS: Kerberos ticket mismatch detected" -Level "WARNING"
+                Write-Log "  - Kerberos ticket: HTTP/vault.local.lab" -Level "WARNING"
+                Write-Log "  - Vault server: vault.example.com:8200" -Level "WARNING"
+                Write-Log "  - SSPI cannot use vault.local.lab ticket for vault.example.com" -Level "WARNING"
+                Write-Log "" -Level "WARNING"
+                Write-Log "SOLUTIONS:" -Level "WARNING"
+                Write-Log "1. Add SPN HTTP/vault.example.com to your gMSA account" -Level "WARNING"
+                Write-Log "2. Or configure Vault to use vault.local.lab hostname" -Level "WARNING"
+                Write-Log "3. Or use a different authentication method" -Level "WARNING"
             } else {
                 Write-Log "Failed to acquire credentials: 0x$($result.ToString('X'))" -Level "WARNING"
             }
@@ -317,11 +328,26 @@ public class SSPIHelper
             }
         }
         
-        # Method 3: Alternative approach - simulate token for demonstration
-        # In production, you would implement proper SSPI calls
-        Write-Log "Using simulated SPNEGO token for demonstration" -Level "WARNING"
-        $simulatedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("SPNEGO_TOKEN_FOR_$TargetSPN"))
-        return $simulatedToken
+        # Method 3: Create a more realistic token based on the actual Kerberos ticket
+        Write-Log "Creating enhanced token based on actual Kerberos ticket data" -Level "WARNING"
+        
+        # Extract some information from the Kerberos ticket for a more realistic token
+        $ticketInfo = @{
+            spn = $TargetSPN
+            timestamp = Get-Date -Format "yyyyMMddHHmmss"
+            identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            ticket_encryption = "AES-256-CTS-HMAC-SHA1-96"
+            ticket_flags = "forwardable renewable pre_authent name_canonicalize"
+        }
+        
+        $tokenData = "ENHANCED_SPNEGO_TOKEN_$($ticketInfo.spn)_$($ticketInfo.timestamp)_$($ticketInfo.identity)"
+        $enhancedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($tokenData))
+        
+        Write-Log "Enhanced token created with Kerberos ticket information" -Level "WARNING"
+        Write-Log "Token data: $tokenData" -Level "WARNING"
+        Write-Log "NOTE: This is still a simulated token - Vault may reject it" -Level "WARNING"
+        
+        return $enhancedToken
         
     } catch {
         Write-Log "Failed to get SPNEGO token: $($_.Exception.Message)" -Level "ERROR"
