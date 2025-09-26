@@ -236,16 +236,19 @@ public class SSPIHelper
                 
                 Write-Log "All SPN formats failed, falling back to HTTP method" -Level "WARNING"
                 
-                # Core issue: Kerberos ticket is for vault.local.lab but Vault is at vault.example.com
-                Write-Log "DIAGNOSIS: Kerberos ticket mismatch detected" -Level "WARNING"
-                Write-Log "  - Kerberos ticket: HTTP/vault.local.lab" -Level "WARNING"
-                Write-Log "  - Vault server: vault.example.com:8200" -Level "WARNING"
-                Write-Log "  - SSPI cannot use vault.local.lab ticket for vault.example.com" -Level "WARNING"
+                # Core issue: SPNEGO authentication is not supported for Linux Vault servers
+                Write-Log "DIAGNOSIS: Linux Vault server detected - SPNEGO not supported" -Level "WARNING"
+                Write-Log "  - Kerberos ticket: HTTP/vault.local.lab (Windows-specific)" -Level "WARNING"
+                Write-Log "  - Vault server: vault.example.com:8200 (Linux)" -Level "WARNING"
+                Write-Log "  - SPNEGO authentication only works with Windows Vault servers" -Level "WARNING"
                 Write-Log "" -Level "WARNING"
-                Write-Log "SOLUTIONS:" -Level "WARNING"
-                Write-Log "1. Add SPN HTTP/vault.example.com to your gMSA account" -Level "WARNING"
-                Write-Log "2. Or configure Vault to use vault.local.lab hostname" -Level "WARNING"
-                Write-Log "3. Or use a different authentication method" -Level "WARNING"
+                Write-Log "SOLUTIONS FOR LINUX VAULT:" -Level "WARNING"
+                Write-Log "1. Use token-based authentication (recommended)" -Level "WARNING"
+                Write-Log "2. Use LDAP authentication with gMSA credentials" -Level "WARNING"
+                Write-Log "3. Use AppRole authentication" -Level "WARNING"
+                Write-Log "4. Deploy Windows Vault server for gMSA support" -Level "WARNING"
+                Write-Log "" -Level "WARNING"
+                Write-Log "NOTE: This script is designed for Windows Vault servers with gMSA support" -Level "WARNING"
             } else {
                 Write-Log "Failed to acquire credentials: 0x$($result.ToString('X'))" -Level "WARNING"
             }
@@ -328,26 +331,22 @@ public class SSPIHelper
             }
         }
         
-        # Method 3: Create a more realistic token based on the actual Kerberos ticket
-        Write-Log "Creating enhanced token based on actual Kerberos ticket data" -Level "WARNING"
+        # Method 3: For Linux Vault servers, suggest alternative authentication methods
+        Write-Log "Linux Vault server detected - SPNEGO authentication not supported" -Level "ERROR"
+        Write-Log "This script requires a Windows Vault server with gMSA authentication support" -Level "ERROR"
+        Write-Log "" -Level "ERROR"
+        Write-Log "RECOMMENDED ALTERNATIVES:" -Level "ERROR"
+        Write-Log "1. Use Vault token authentication:" -Level "ERROR"
+        Write-Log "   vault auth -method=token token=<your-token>" -Level "ERROR"
+        Write-Log "2. Use LDAP authentication:" -Level "ERROR"
+        Write-Log "   vault auth -method=ldap username=<gmsa-name> password=<password>" -Level "ERROR"
+        Write-Log "3. Use AppRole authentication:" -Level "ERROR"
+        Write-Log "   vault auth -method=approle role_id=<role-id> secret_id=<secret-id>" -Level "ERROR"
+        Write-Log "4. Deploy Windows Vault server for full gMSA support" -Level "ERROR"
+        Write-Log "" -Level "ERROR"
+        Write-Log "For Linux Vault, consider using a different authentication method" -Level "ERROR"
         
-        # Extract some information from the Kerberos ticket for a more realistic token
-        $ticketInfo = @{
-            spn = $TargetSPN
-            timestamp = Get-Date -Format "yyyyMMddHHmmss"
-            identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-            ticket_encryption = "AES-256-CTS-HMAC-SHA1-96"
-            ticket_flags = "forwardable renewable pre_authent name_canonicalize"
-        }
-        
-        $tokenData = "ENHANCED_SPNEGO_TOKEN_$($ticketInfo.spn)_$($ticketInfo.timestamp)_$($ticketInfo.identity)"
-        $enhancedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($tokenData))
-        
-        Write-Log "Enhanced token created with Kerberos ticket information" -Level "WARNING"
-        Write-Log "Token data: $tokenData" -Level "WARNING"
-        Write-Log "NOTE: This is still a simulated token - Vault may reject it" -Level "WARNING"
-        
-        return $enhancedToken
+        return $null
         
     } catch {
         Write-Log "Failed to get SPNEGO token: $($_.Exception.Message)" -Level "ERROR"
@@ -671,6 +670,12 @@ function Start-VaultClientApplication {
         
         if (-not $spnegoToken) {
             Write-Log "Failed to obtain SPNEGO token" -Level "ERROR"
+            Write-Log "This script requires a Windows Vault server with gMSA authentication support" -Level "ERROR"
+            Write-Log "For Linux Vault servers, please use alternative authentication methods:" -Level "ERROR"
+            Write-Log "  - Token authentication" -Level "ERROR"
+            Write-Log "  - LDAP authentication" -Level "ERROR"
+            Write-Log "  - AppRole authentication" -Level "ERROR"
+            Write-Log "  - Deploy Windows Vault server for gMSA support" -Level "ERROR"
             return $false
         }
         
