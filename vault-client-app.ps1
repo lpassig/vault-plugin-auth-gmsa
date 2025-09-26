@@ -465,10 +465,9 @@ function Get-SPNEGOToken {
         } catch {
             Write-Log "P/Invoke method failed: $($_.Exception.Message)" -Level "WARNING"
         }
-            Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-using System.Security.Principal;
+        
+        # Method 2: HTTP-based approach (fallback)
+        Write-Log "Using HTTP-based SPNEGO token generation..."
 
 public class SSPIHelper
 {
