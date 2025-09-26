@@ -452,29 +452,19 @@ function Get-SPNEGOToken {
     try {
         Write-Log "Generating SPNEGO token for SPN: $TargetSPN"
         
-        # Method 1: Generate real SPNEGO token using Windows SSPI
+        # Method 1: Generate real SPNEGO token using P/Invoke (Most Reliable)
         try {
-            Write-Log "Attempting SPNEGO token generation using Windows SSPI..."
+            Write-Log "Attempting SPNEGO token generation using P/Invoke..."
             
-            # Use WindowsIdentity to get current user's token
-            $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-            Write-Log "Current identity: $($currentIdentity.Name)"
-            
-            # Check if we have a Kerberos ticket for the target SPN
-            try {
-                $klistOutput = klist get $TargetSPN 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Log "Kerberos ticket found for $TargetSPN"
-                    Write-Log "Ticket details: $klistOutput"
-                } else {
-                    Write-Log "No Kerberos ticket found for $TargetSPN" -Level "WARNING"
-                    Write-Log "klist output: $klistOutput" -Level "WARNING"
-                }
-            } catch {
-                Write-Log "Could not check Kerberos tickets: $($_.Exception.Message)" -Level "WARNING"
+            # Use P/Invoke to generate real SPNEGO token
+            $spnegoToken = Get-SPNEGOTokenPInvoke -TargetSPN $TargetSPN -VaultUrl $VaultUrl
+            if ($spnegoToken) {
+                Write-Log "Real SPNEGO token generated successfully using P/Invoke"
+                return $spnegoToken
             }
-            
-            # Use Windows SSPI to generate a real SPNEGO token
+        } catch {
+            Write-Log "P/Invoke method failed: $($_.Exception.Message)" -Level "WARNING"
+        }
             Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
