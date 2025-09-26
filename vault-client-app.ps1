@@ -23,8 +23,17 @@ param(
 # =============================================================================
 
 # Create output directory
-if (-not (Test-Path $ConfigOutputDir)) {
-    New-Item -ItemType Directory -Path $ConfigOutputDir -Force
+try {
+    if (-not (Test-Path $ConfigOutputDir)) {
+        New-Item -ItemType Directory -Path $ConfigOutputDir -Force | Out-Null
+        Write-Host "Created config directory: $ConfigOutputDir" -ForegroundColor Green
+    } else {
+        Write-Host "Config directory already exists: $ConfigOutputDir" -ForegroundColor Green
+    }
+} catch {
+    Write-Host "Failed to create config directory: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Using current directory for logs" -ForegroundColor Yellow
+    $ConfigOutputDir = "."
 }
 
 # Logging function
@@ -38,9 +47,18 @@ function Write-Log {
     Write-Host $logMessage -ForegroundColor $(if ($Level -eq "ERROR") { "Red" } elseif ($Level -eq "WARNING") { "Yellow" } else { "Green" })
     
     # Also write to log file
-    $logFile = "$ConfigOutputDir\vault-client.log"
-    Add-Content -Path $logFile -Value $logMessage
+    try {
+        $logFile = "$ConfigOutputDir\vault-client.log"
+        Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "Failed to write to log file: $($_.Exception.Message)" -ForegroundColor Red
+    }
 }
+
+# Test logging immediately
+Write-Log "Script initialization completed successfully" -Level "INFO"
+Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
+Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 
 # =============================================================================
 # SPNEGO Token Generation Functions
