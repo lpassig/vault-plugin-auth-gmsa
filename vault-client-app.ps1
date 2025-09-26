@@ -9,7 +9,7 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://example.com:8200",
+    [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
@@ -59,19 +59,13 @@ function Get-SPNEGOToken {
             # Load required .NET assemblies
             Add-Type -AssemblyName System.Security
             
-            # Create SSPI context for SPNEGO
-            $package = "Negotiate"
-            $target = $TargetSPN
-            
-            # Initialize security context
-            $context = New-Object System.Security.Authentication.ExtendedProtection.ChannelBinding
-            
             # Use WindowsIdentity to get current user's token
             $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
             Write-Log "Current identity: $($currentIdentity.Name)"
             
             # For demonstration, we'll create a simulated token
             # In a real implementation, you would use SSPI calls via P/Invoke
+            # or use System.Net.HttpClient with proper authentication
             $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes("SSPI_SPNEGO_TOKEN_FOR_$TargetSPN_$(Get-Date -Format 'yyyyMMddHHmmss')"))
             
             Write-Log "SSPI-based SPNEGO token generated successfully"
@@ -95,34 +89,63 @@ function Get-SPNEGOToken {
         $client = New-Object System.Net.Http.HttpClient($handler)
         $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
         
-        # Create a request to trigger SPNEGO negotiation
-        $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/health")
+        # Try multiple endpoints to trigger SPNEGO negotiation
+        $endpoints = @(
+            "$VaultUrl/v1/auth/gmsa/health",
+            "$VaultUrl/v1/auth/gmsa/login",
+            "$VaultUrl/v1/sys/health"
+        )
         
-        # Send the request to get SPNEGO token
-        $response = $client.SendAsync($request).Result
-        
-        Write-Log "Response status: $($response.StatusCode)"
-        Write-Log "Response headers: $($response.Headers)"
-        
-        # Check if WWW-Authenticate header exists before trying to access it
-        if ($response.Headers.Contains("WWW-Authenticate")) {
-            $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
-            if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
-                $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
-                Write-Log "SPNEGO token obtained successfully from WWW-Authenticate header"
-                return $spnegoToken
-            }
-        } else {
-            Write-Log "WWW-Authenticate header not found in response" -Level "WARNING"
-        }
-        
-        # Try to extract token from Authorization header if present
-        if ($response.Headers.Contains("Authorization")) {
-            $authHeader = $response.Headers.GetValues("Authorization")
-            if ($authHeader -and $authHeader[0] -like "Negotiate *") {
-                $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
-                Write-Log "SPNEGO token obtained from Authorization header"
-                return $spnegoToken
+        foreach ($endpoint in $endpoints) {
+            try {
+                Write-Log "Trying endpoint: $endpoint"
+                
+                # Create a request to trigger SPNEGO negotiation
+                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $endpoint)
+                
+                # Send the request to get SPNEGO token
+                $response = $client.SendAsync($request).Result
+                
+                Write-Log "Response status: $($response.StatusCode)"
+                Write-Log "Response headers: $($response.Headers)"
+                
+                # Check if WWW-Authenticate header exists before trying to access it
+                if ($response.Headers.Contains("WWW-Authenticate")) {
+                    $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
+                    if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
+                        $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
+                        Write-Log "SPNEGO token obtained successfully from WWW-Authenticate header"
+                        return $spnegoToken
+                    }
+                } else {
+                    Write-Log "WWW-Authenticate header not found in response" -Level "WARNING"
+                }
+                
+                # Try to extract token from Authorization header if present
+                if ($response.Headers.Contains("Authorization")) {
+                    $authHeader = $response.Headers.GetValues("Authorization")
+                    if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                        Write-Log "SPNEGO token obtained from Authorization header"
+                        return $spnegoToken
+                    }
+                }
+                
+                # If we get a 401 Unauthorized, that's expected for SPNEGO negotiation
+                if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+                    Write-Log "Received 401 Unauthorized - this is expected for SPNEGO negotiation" -Level "INFO"
+                    continue
+                }
+                
+                # If we get a 403 Forbidden, try next endpoint
+                if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Forbidden) {
+                    Write-Log "Received 403 Forbidden - trying next endpoint" -Level "WARNING"
+                    continue
+                }
+                
+            } catch {
+                Write-Log "Failed to connect to $endpoint : $($_.Exception.Message)" -Level "WARNING"
+                continue
             }
         }
         
@@ -182,12 +205,26 @@ function Invoke-VaultAuthentication {
         
     } catch {
         Write-Log "Vault authentication failed: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "Exception type: $($_.Exception.GetType().Name)" -Level "ERROR"
+        
         if ($_.Exception.Response) {
-            $errorStream = $_.Exception.Response.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($errorStream)
-            $errorBody = $reader.ReadToEnd()
-            Write-Log "Error details: $errorBody" -Level "ERROR"
+            $statusCode = $_.Exception.Response.StatusCode
+            Write-Log "HTTP Status Code: $statusCode" -Level "ERROR"
+            
+            try {
+                $errorStream = $_.Exception.Response.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($errorStream)
+                $errorBody = $reader.ReadToEnd()
+                Write-Log "Error details: $errorBody" -Level "ERROR"
+            } catch {
+                Write-Log "Could not read error response body: $($_.Exception.Message)" -Level "WARNING"
+            }
         }
+        
+        if ($_.Exception.InnerException) {
+            Write-Log "Inner exception: $($_.Exception.InnerException.Message)" -Level "ERROR"
+        }
+        
         return $null
     }
 }

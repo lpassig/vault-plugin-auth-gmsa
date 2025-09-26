@@ -15,7 +15,7 @@
 $scriptContent = @'
 # Simple Vault authentication script (runs under gMSA)
 param(
-    [string]$VaultUrl = "https://example.com:8200",
+    [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$Role = "vault-gmsa-role"
 )
 

@@ -242,7 +242,7 @@ Register-ScheduledTask -TaskName "MyApp-Task" -Action $action -User "local.lab\v
 $spnegoToken = [System.Convert]::ToBase64String($spnegoBytes)
 
 # 2. Authenticate to Vault
-$authResponse = Invoke-RestMethod -Method POST -Uri "https://example.com:8200/v1/auth/gmsa/login" -Body (@{
+$authResponse = Invoke-RestMethod -Method POST -Uri "https://vault.example.com:8200/v1/auth/gmsa/login" -Body (@{
     role = "vault-gmsa-role"
     spnego = $spnegoToken
 } | ConvertTo-Json) -ContentType "application/json"
@@ -252,7 +252,7 @@ $vaultToken = $authResponse.auth.client_token
 $headers = @{ "X-Vault-Token" = $vaultToken }
 
 # 4. Access secrets
-$secrets = Invoke-RestMethod -Method GET -Uri "https://example.com:8200/v1/secret/my-app/database" -Headers $headers
+$secrets = Invoke-RestMethod -Method GET -Uri "https://vault.example.com:8200/v1/secret/my-app/database" -Headers $headers
 ```
 
 #### **Client Authentication Example (C#/.NET)**
@@ -1242,7 +1242,7 @@ clock_skew_sec=300
 2. POST to Vault:
 ```powershell
 $token = [System.Convert]::ToBase64String($spnegoBytes)
-Invoke-RestMethod -Method POST -Uri "https://example.com:8200/v1/auth/gmsa/login" -Body (@{ spnego=$token } | ConvertTo-Json)
+Invoke-RestMethod -Method POST -Uri "https://vault.example.com:8200/v1/auth/gmsa/login" -Body (@{ spnego=$token } | ConvertTo-Json)
 ```
 
 
@@ -1516,7 +1516,7 @@ Response:
 Windows example (PowerShell):
 ```powershell
 $token = [Convert]::ToBase64String($spnegoBytes)
-Invoke-RestMethod -Method POST -Uri "https://example.com:8200/v1/auth/gmsa/login" `
+Invoke-RestMethod -Method POST -Uri "https://vault.example.com:8200/v1/auth/gmsa/login" `
   -Body (@{ role = "app"; spnego = $token } | ConvertTo-Json)
 ```
 

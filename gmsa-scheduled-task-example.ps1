@@ -11,7 +11,7 @@
 # Make sure the gMSA is already installed: Test-ADServiceAccount -Identity "vault-gmsa"
 
 param(
-    [string]$VaultUrl = "https://example.com:8200",
+    [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$TaskName = "VaultSecretRefresh",
     [string]$ScriptPath = "C:\vault\scripts\refresh-secrets.ps1"
@@ -27,7 +27,7 @@ $vaultScript = @'
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://example.com:8200",
+    [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$VaultRole = "vault-gmsa-role"
 )
 

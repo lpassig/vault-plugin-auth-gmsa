@@ -18,7 +18,7 @@
 $productionScript = @'
 # Production Vault Authentication Script (runs under gMSA)
 param(
-    [string]$VaultUrl = "https://example.com:8200",
+    [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$Role = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab"
 )
@@ -275,7 +275,7 @@ $productionScript | Out-File -FilePath $scriptPath -Encoding UTF8
 Write-Host "Creating scheduled task..." -ForegroundColor Yellow
 
 # Task action
-$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`" -VaultUrl `"https://example.com:8200`" -Role `"vault-gmsa-role`""
+$action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`" -VaultUrl `"https://vault.example.com:8200`" -Role `"vault-gmsa-role`""
 
 # Task trigger (daily at 2 AM)
 $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
