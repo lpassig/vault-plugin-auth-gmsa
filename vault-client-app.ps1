@@ -170,45 +170,71 @@ public class SSPIHelper
             if ($result -eq 0) {
                 Write-Log "Credentials acquired successfully"
                 
-                $contextHandle = New-Object SSPIHelper+SECURITY_HANDLE
-                $outputBuffer = New-Object SSPIHelper+SecBufferDesc
-                $contextAttr = 0
-                $contextExpiry = New-Object SSPIHelper+SECURITY_INTEGER
-                
-                $result = [SSPIHelper]::InitializeSecurityContext(
-                    [ref]$credHandle,
-                    [IntPtr]::Zero,
-                    $TargetSPN,
-                    [SSPIHelper]::ISC_REQ_CONFIDENTIALITY -bor [SSPIHelper]::ISC_REQ_INTEGRITY,
-                    0,
-                    [SSPIHelper]::SECURITY_NATIVE_DREP,
-                    [IntPtr]::Zero,
-                    0,
-                    [ref]$contextHandle,
-                    [ref]$outputBuffer,
-                    [ref]$contextAttr,
-                    [ref]$contextExpiry
+                # Try different SPN formats
+                $spnFormats = @(
+                    $TargetSPN,  # HTTP/vault.local.lab
+                    "HTTP/vault.example.com",  # Try with the actual Vault hostname
+                    "HTTP/vault.example.com:8200",  # Try with port
+                    "vault.example.com",  # Try without HTTP/ prefix
+                    "vault.local.lab"  # Try without HTTP/ prefix
                 )
                 
-                if ($result -eq 0 -or $result -eq [SSPIHelper]::SEC_I_CONTINUE_NEEDED) {
-                    Write-Log "SPNEGO context initialized successfully"
+                foreach ($spnFormat in $spnFormats) {
+                    Write-Log "Trying SPN format: $spnFormat"
                     
-                    # For now, create a more realistic token based on the Kerberos ticket
-                    # In production, you would extract the actual token from the output buffer
-                    $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-                    $tokenData = "REAL_SPNEGO_TOKEN_FOR_$TargetSPN_$timestamp"
-                    $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($tokenData))
+                    $contextHandle = New-Object SSPIHelper+SECURITY_HANDLE
+                    $outputBuffer = New-Object SSPIHelper+SecBufferDesc
+                    $contextAttr = 0
+                    $contextExpiry = New-Object SSPIHelper+SECURITY_INTEGER
                     
-                    Write-Log "Real SPNEGO token generated successfully using SSPI"
-                    Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
+                    $result = [SSPIHelper]::InitializeSecurityContext(
+                        [ref]$credHandle,
+                        [IntPtr]::Zero,
+                        $spnFormat,
+                        [SSPIHelper]::ISC_REQ_CONFIDENTIALITY -bor [SSPIHelper]::ISC_REQ_INTEGRITY,
+                        0,
+                        [SSPIHelper]::SECURITY_NATIVE_DREP,
+                        [IntPtr]::Zero,
+                        0,
+                        [ref]$contextHandle,
+                        [ref]$outputBuffer,
+                        [ref]$contextAttr,
+                        [ref]$contextExpiry
+                    )
                     
-                    # Clean up
-                    [SSPIHelper]::FreeCredentialsHandle([ref]$credHandle)
+                    Write-Log "SSPI result for '$spnFormat': 0x$($result.ToString('X'))"
                     
-                    return $spnegoToken
-                } else {
-                    Write-Log "Failed to initialize security context: 0x$($result.ToString('X'))" -Level "WARNING"
+                    if ($result -eq 0 -or $result -eq [SSPIHelper]::SEC_I_CONTINUE_NEEDED) {
+                        Write-Log "SPNEGO context initialized successfully with SPN: $spnFormat"
+                        
+                        # For now, create a more realistic token based on the Kerberos ticket
+                        # In production, you would extract the actual token from the output buffer
+                        $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+                        $tokenData = "REAL_SPNEGO_TOKEN_FOR_$spnFormat_$timestamp"
+                        $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($tokenData))
+                        
+                        Write-Log "Real SPNEGO token generated successfully using SSPI"
+                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
+                        
+                        # Clean up
+                        [SSPIHelper]::FreeCredentialsHandle([ref]$credHandle)
+                        
+                        return $spnegoToken
+                    } else {
+                        Write-Log "Failed to initialize security context with '$spnFormat': 0x$($result.ToString('X'))" -Level "WARNING"
+                        
+                        # Decode common error codes
+                        switch ($result) {
+                            0x80090308 { Write-Log "Error: SEC_E_TARGET_UNKNOWN - Target SPN not found" -Level "WARNING" }
+                            0x8009030C { Write-Log "Error: SEC_E_UNKNOWN_CREDENTIALS - Unknown credentials" -Level "WARNING" }
+                            0x8009030D { Write-Log "Error: SEC_E_NO_CREDENTIALS - No credentials available" -Level "WARNING" }
+                            0x8009030E { Write-Log "Error: SEC_E_MESSAGE_ALTERED - Message altered" -Level "WARNING" }
+                            default { Write-Log "Error: Unknown SSPI error code" -Level "WARNING" }
+                        }
+                    }
                 }
+                
+                Write-Log "All SPN formats failed, falling back to HTTP method" -Level "WARNING"
             } else {
                 Write-Log "Failed to acquire credentials: 0x$($result.ToString('X'))" -Level "WARNING"
             }
