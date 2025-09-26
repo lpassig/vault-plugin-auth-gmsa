@@ -46,9 +46,9 @@ function Write-Log {
 # gMSA Password Retrieval
 # =============================================================================
 
-function Get-GMSAPassword {
+function Get-GMSACredentials {
     try {
-        Write-Log "Retrieving gMSA password for LDAP authentication..."
+        Write-Log "Preparing gMSA credentials for Linux Vault authentication..."
         
         # Get current identity
         $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -61,24 +61,21 @@ function Get-GMSAPassword {
             return $null
         }
         
-        # For gMSA, we need to use the password that was set during creation
-        # In a real environment, you would retrieve this from a secure store
-        # For now, we'll use a placeholder that should be configured
+        Write-Log "gMSA detected: $gmsaName"
+        Write-Log "NOTE: gMSA passwords are auto-managed by Active Directory" -Level "INFO"
+        Write-Log "For Linux Vault, gMSA authentication requires special configuration" -Level "INFO"
         
-        # Try to get password from environment variable or secure store
-        $gmsaPassword = $env:GMSA_PASSWORD
-        if (-not $gmsaPassword) {
-            Write-Log "GMSA password not found in environment variable GMSA_PASSWORD" -Level "WARNING"
-            Write-Log "Please set the gMSA password in environment variable GMSA_PASSWORD" -Level "WARNING"
-            Write-Log "Example: `$env:GMSA_PASSWORD = 'YourGMSAPassword'" -Level "WARNING"
-            return $null
+        # For gMSA with Linux Vault, we need to use alternative authentication methods
+        # since gMSA passwords cannot be retrieved programmatically
+        
+        return @{
+            username = $currentIdentity
+            gmsa_name = $gmsaName
+            method = "gmsa_linux"
         }
         
-        Write-Log "gMSA password retrieved successfully"
-        return $gmsaPassword
-        
     } catch {
-        Write-Log "Failed to retrieve gMSA password: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "Failed to prepare gMSA credentials: $($_.Exception.Message)" -Level "ERROR"
         return $null
     }
 }
@@ -372,30 +369,31 @@ public class SSPIHelper
             }
         }
         
-        # Method 3: For Linux Vault servers, use LDAP authentication with gMSA
-        Write-Log "Linux Vault server detected - using LDAP authentication with gMSA" -Level "WARNING"
-        Write-Log "Attempting LDAP authentication with gMSA credentials..." -Level "INFO"
+        # Method 3: For Linux Vault servers, prepare gMSA credentials for alternative authentication
+        Write-Log "Linux Vault server detected - preparing gMSA credentials for alternative authentication" -Level "WARNING"
+        Write-Log "gMSA passwords are auto-managed by Active Directory and cannot be retrieved programmatically" -Level "INFO"
         
-        # Get gMSA password for LDAP authentication
-        $gmsaPassword = Get-GMSAPassword
-        if (-not $gmsaPassword) {
-            Write-Log "Failed to retrieve gMSA password for LDAP authentication" -Level "ERROR"
-            Write-Log "Make sure the gMSA has a password set and is accessible" -Level "ERROR"
+        # Get gMSA credentials
+        $gmsaCredentials = Get-GMSACredentials
+        if (-not $gmsaCredentials) {
+            Write-Log "Failed to prepare gMSA credentials" -Level "ERROR"
             return $null
         }
         
-        # Return special token indicating LDAP authentication should be used
-        $ldapToken = @{
-            method = "ldap"
-            username = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-            password = $gmsaPassword
+        # Return special token indicating gMSA authentication should be used
+        $gmsaToken = @{
+            method = "gmsa_linux"
+            username = $gmsaCredentials.username
+            gmsa_name = $gmsaCredentials.gmsa_name
             spn = $TargetSPN
+            vault_url = $VaultUrl
         } | ConvertTo-Json -Compress
         
-        $encodedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($ldapToken))
+        $encodedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($gmsaToken))
         
-        Write-Log "LDAP authentication token prepared for Linux Vault" -Level "INFO"
-        Write-Log "Username: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)" -Level "INFO"
+        Write-Log "gMSA credentials prepared for Linux Vault authentication" -Level "INFO"
+        Write-Log "Username: $($gmsaCredentials.username)" -Level "INFO"
+        Write-Log "gMSA Name: $($gmsaCredentials.gmsa_name)" -Level "INFO"
         
         return $encodedToken
         
@@ -423,14 +421,14 @@ function Invoke-VaultAuthentication {
     try {
         Write-Log "Authenticating to Vault at: $VaultUrl"
         
-        # Check if this is an LDAP token (for Linux Vault)
+        # Check if this is a gMSA token (for Linux Vault)
         try {
             $decodedToken = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($SPNEGOToken))
             $tokenData = $decodedToken | ConvertFrom-Json
             
-            if ($tokenData.method -eq "ldap") {
-                Write-Log "Using LDAP authentication for Linux Vault server"
-                return Invoke-LDAPAuthentication -VaultUrl $VaultUrl -Username $tokenData.username -Password $tokenData.password
+            if ($tokenData.method -eq "gmsa_linux") {
+                Write-Log "Using gMSA authentication for Linux Vault server"
+                return Invoke-GMSAAuthentication -VaultUrl $VaultUrl -TokenData $tokenData
             }
         } catch {
             # Not a JSON token, continue with SPNEGO authentication
@@ -508,62 +506,46 @@ function Invoke-VaultAuthentication {
 }
 
 # =============================================================================
-# LDAP Authentication for Linux Vault
+# gMSA Authentication for Linux Vault
 # =============================================================================
 
-function Invoke-LDAPAuthentication {
+function Invoke-GMSAAuthentication {
     param(
         [string]$VaultUrl,
-        [string]$Username,
-        [string]$Password
+        [hashtable]$TokenData
     )
     
     try {
-        Write-Log "Authenticating to Linux Vault using LDAP..."
+        Write-Log "Authenticating to Linux Vault using gMSA credentials..."
+        Write-Log "gMSA Name: $($TokenData.gmsa_name)"
+        Write-Log "Username: $($TokenData.username)"
         
-        $loginEndpoint = "$VaultUrl/v1/auth/ldap/login/$Username"
-        $loginBody = @{
-            password = $Password
-        } | ConvertTo-Json
+        # For gMSA with Linux Vault, we need to use alternative authentication methods
+        # since gMSA passwords are auto-managed by AD and cannot be retrieved
         
-        Write-Log "LDAP login endpoint: $loginEndpoint"
-        Write-Log "Username: $Username"
+        Write-Log "gMSA authentication with Linux Vault requires special configuration:" -Level "WARNING"
+        Write-Log "1. Configure Vault with LDAP authentication method" -Level "WARNING"
+        Write-Log "2. Create a service account with known password for gMSA" -Level "WARNING"
+        Write-Log "3. Use AppRole authentication with gMSA identity" -Level "WARNING"
+        Write-Log "4. Use token-based authentication" -Level "WARNING"
+        Write-Log "" -Level "WARNING"
+        Write-Log "RECOMMENDED APPROACH:" -Level "WARNING"
+        Write-Log "Use AppRole authentication where the gMSA identity is used to obtain" -Level "WARNING"
+        Write-Log "role_id and secret_id for programmatic access to Vault." -Level "WARNING"
+        Write-Log "" -Level "WARNING"
+        Write-Log "Example AppRole configuration:" -Level "WARNING"
+        Write-Log "vault auth enable approle" -Level "WARNING"
+        Write-Log "vault write auth/approle/role/gmsa-role token_policies=`"gmsa-policy`"" -Level "WARNING"
+        Write-Log "vault write auth/approle/role/gmsa-role/role-id role_id=`"gmsa-role-id`"" -Level "WARNING"
+        Write-Log "vault write auth/approle/role/gmsa-role/custom-secret-id secret_id=`"gmsa-secret-id`"" -Level "WARNING"
         
-        $headers = @{
-            "Content-Type" = "application/json"
-            "User-Agent" = "Vault-gMSA-Client/1.0"
-        }
-        
-        $response = Invoke-RestMethod -Method POST -Uri $loginEndpoint -Body $loginBody -Headers $headers
-        
-        if ($response.auth -and $response.auth.client_token) {
-            Write-Log "LDAP authentication successful"
-            Write-Log "Token: $($response.auth.client_token.Substring(0,20))..."
-            Write-Log "Policies: $($response.auth.policies -join ', ')"
-            Write-Log "TTL: $($response.auth.lease_duration) seconds"
-            return $response.auth.client_token
-        } else {
-            Write-Log "LDAP authentication failed: Invalid response" -Level "ERROR"
-            return $null
-        }
+        # For now, return null to indicate authentication failed
+        # In a real implementation, you would implement one of the above approaches
+        Write-Log "gMSA authentication not implemented - requires manual configuration" -Level "ERROR"
+        return $null
         
     } catch {
-        Write-Log "LDAP authentication failed: $($_.Exception.Message)" -Level "ERROR"
-        
-        if ($_.Exception.Response) {
-            $statusCode = $_.Exception.Response.StatusCode
-            Write-Log "HTTP Status Code: $statusCode" -Level "ERROR"
-            
-            try {
-                $errorStream = $_.Exception.Response.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($errorStream)
-                $errorBody = $reader.ReadToEnd()
-                Write-Log "LDAP error details: $errorBody" -Level "ERROR"
-            } catch {
-                Write-Log "Could not read LDAP error response body" -Level "WARNING"
-            }
-        }
-        
+        Write-Log "gMSA authentication failed: $($_.Exception.Message)" -Level "ERROR"
         return $null
     }
 }
@@ -799,14 +781,16 @@ function Start-VaultClientApplication {
         if (-not $spnegoToken) {
             Write-Log "Failed to obtain authentication token" -Level "ERROR"
             Write-Log "This could be due to:" -Level "ERROR"
-            Write-Log "  - Linux Vault server (use LDAP authentication)" -Level "ERROR"
-            Write-Log "  - Missing gMSA password (set GMSA_PASSWORD environment variable)" -Level "ERROR"
+            Write-Log "  - Linux Vault server (gMSA authentication requires special setup)" -Level "ERROR"
             Write-Log "  - Windows Vault server configuration issues" -Level "ERROR"
             Write-Log "" -Level "ERROR"
-            Write-Log "For Linux Vault with gMSA:" -Level "ERROR"
-            Write-Log "1. Set gMSA password: `$env:GMSA_PASSWORD = 'YourGMSAPassword'" -Level "ERROR"
-            Write-Log "2. Configure Vault LDAP auth method" -Level "ERROR"
-            Write-Log "3. Ensure gMSA has LDAP access permissions" -Level "ERROR"
+            Write-Log "FOR LINUX VAULT WITH gMSA:" -Level "ERROR"
+            Write-Log "gMSA passwords are auto-managed by Active Directory and cannot be retrieved." -Level "ERROR"
+            Write-Log "Use one of these approaches:" -Level "ERROR"
+            Write-Log "1. AppRole authentication (recommended)" -Level "ERROR"
+            Write-Log "2. Token-based authentication" -Level "ERROR"
+            Write-Log "3. LDAP with service account proxy" -Level "ERROR"
+            Write-Log "4. Deploy Windows Vault server for native gMSA support" -Level "ERROR"
             return $false
         }
         
