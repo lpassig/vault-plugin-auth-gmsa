@@ -142,9 +142,9 @@ Get-ADGroupMember Vault-Servers
 
 # Method 1: Create regular service account for keytab (RECOMMENDED)
 # This is the most reliable approach for Vault configuration
-New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@example.com" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
-setspn -A HTTP/example.com LOCAL\vault-keytab-svc
-ktpass -princ HTTP/example.com@example.com -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@local.lab" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
+setspn -A HTTP/local.lab LOCAL\vault-keytab-svc
+ktpass -princ HTTP/local.lab@local.lab -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
 
 # Convert to base64 for Vault configuration
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("vault-keytab.keytab"))
@@ -218,17 +218,17 @@ Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
 # 3. Configure your application to run under the gMSA
 # Option A: Run as Windows service under gMSA
 sc.exe create "MyApp" binpath="C:\myapp\myapp.exe" start=auto
-sc.exe config "MyApp" obj="example.com\vault-gmsa$"
+sc.exe config "MyApp" obj="local.lab\vault-gmsa$"
 sc.exe config "MyApp" password=""
 
 # Option B: Run as scheduled task under gMSA (NO PASSWORD for gMSA!)
-Register-ScheduledTask -TaskName "MyApp-Task" -Action $action -User "example.com\vault-gmsa$"
+Register-ScheduledTask -TaskName "MyApp-Task" -Action $action -User "local.lab\vault-gmsa$"
 ```
 
 #### **How Client Authentication Works**
-1. **Client application** runs under the gMSA identity (`example.com\vault-gmsa$`)
+1. **Client application** runs under the gMSA identity (`local.lab\vault-gmsa$`)
 2. **Windows automatically** retrieves the gMSA's managed password from AD
-3. **Client obtains** a Kerberos ticket for `HTTP/example.com` using the gMSA
+3. **Client obtains** a Kerberos ticket for `HTTP/local.lab` using the gMSA
 4. **Client sends** SPNEGO token to Vault's `/auth/gmsa/login` endpoint
 5. **Vault validates** the token using the keytab from the regular service account
 6. **Vault issues** a Vault token based on the client's group memberships
@@ -242,7 +242,7 @@ Register-ScheduledTask -TaskName "MyApp-Task" -Action $action -User "example.com
 $spnegoToken = [System.Convert]::ToBase64String($spnegoBytes)
 
 # 2. Authenticate to Vault
-$authResponse = Invoke-RestMethod -Method POST -Uri "https://example.com/v1/auth/gmsa/login" -Body (@{
+$authResponse = Invoke-RestMethod -Method POST -Uri "https://example.com:8200/v1/auth/gmsa/login" -Body (@{
     role = "vault-gmsa-role"
     spnego = $spnegoToken
 } | ConvertTo-Json) -ContentType "application/json"
@@ -252,7 +252,7 @@ $vaultToken = $authResponse.auth.client_token
 $headers = @{ "X-Vault-Token" = $vaultToken }
 
 # 4. Access secrets
-$secrets = Invoke-RestMethod -Method GET -Uri "https://example.com/v1/secret/my-app/database" -Headers $headers
+$secrets = Invoke-RestMethod -Method GET -Uri "https://example.com:8200/v1/secret/my-app/database" -Headers $headers
 ```
 
 #### **Client Authentication Example (C#/.NET)**
@@ -271,7 +271,7 @@ public class VaultClient
     public async Task<string> AuthenticateWithGMSA(string role)
     {
         // Get SPNEGO token (this would use Windows SSPI)
-        var spnegoToken = GetSpnegoToken("HTTP/example.com");
+        var spnegoToken = GetSpnegoToken("HTTP/local.lab");
         
         // Authenticate to Vault
         var authRequest = new
@@ -305,15 +305,15 @@ vault auth enable -path=gmsa vault-plugin-auth-gmsa
 # Configure the auth method using the regular service account keytab
 # This keytab is used to VALIDATE tokens from clients using the gMSA
 vault write auth/gmsa/config \
-    realm="example.com" \
-    kdcs="dc1.example.com,dc2.example.com" \
-    spn="HTTP/example.com" \
+    realm="local.lab" \
+    kdcs="dc1.local.lab,dc2.local.lab" \
+    spn="HTTP/local.lab" \
     keytab="$(cat vault-keytab.keytab.b64)" \
     clock_skew_sec=300 \
     allow_channel_binding=true
 ```
 
-**Important**: The Vault server uses the **regular service account keytab** (`vault-keytab-svc`) to validate Kerberos tokens from clients that are using the **gMSA** (`vault-gmsa$`). Both accounts share the same SPN (`HTTP/example.com`).
+**Important**: The Vault server uses the **regular service account keytab** (`vault-keytab-svc`) to validate Kerberos tokens from clients that are using the **gMSA** (`vault-gmsa$`). Both accounts share the same SPN (`HTTP/local.lab`).
 
 #### **2.2 Create Policy for Secrets**
 ```bash
@@ -478,11 +478,11 @@ Based on extensive testing and troubleshooting, here are the **essential require
 #### **1. Correct LogonType**
 ```powershell
 # ✅ CORRECT: Use LogonType Password for gMSA
-$principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType Password -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password -RunLevel Highest
 
 # ❌ WRONG: Don't use ServiceAccount or Interactive
-$principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType ServiceAccount  # This fails!
-$principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType Interactive     # This fails!
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount  # This fails!
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Interactive     # This fails!
 ```
 
 #### **2. Required User Rights**
@@ -497,7 +497,7 @@ The gMSA must have these rights on the client machine:
 
 #### **4. Common Gotchas**
 - **No password parameter**: Never use `-Password ""` with gMSA
-- **Domain prefix**: Use full domain name (`example.com\vault-gmsa$`)
+- **Domain prefix**: Use full domain name (`local.lab\vault-gmsa$`)
 - **Path permissions**: Ensure gMSA can write to log directories
 - **PowerShell execution**: May need batch file wrapper for complex scripts
 
@@ -537,7 +537,7 @@ $principal = New-ScheduledTaskPrincipal -UserID "child\myAdminAccount$" -LogonTy
 
 ### **What You Get:**
 
-- **Scheduled Task**: Runs daily under `example.com\vault-gmsa$` identity
+- **Scheduled Task**: Runs daily under `local.lab\vault-gmsa$` identity
 - **Secret Reading**: Automatically retrieves secrets from Vault
 - **Configuration Files**: Saves secrets to JSON files and environment variables
 - **Service Management**: Restarts application services when secrets change
@@ -570,16 +570,16 @@ C:\vault-client\config\
    ```powershell
    # Run secpol.msc as Administrator
    # Navigate to: Local Policies → User Rights Assignment → Log on as a batch job
-   # Add: example.com\vault-gmsa$
+   # Add: local.lab\vault-gmsa$
    ```
 
 2. **Use correct LogonType:**
    ```powershell
    # ✅ CORRECT
-   $principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType Password
+   $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password
    
    # ❌ WRONG
-   $principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType ServiceAccount
+   $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount
    ```
 
 #### **Issue 2: PowerShell Execution Errors**
@@ -599,19 +599,19 @@ C:\vault-client\config\
 2. **Check path permissions:**
    ```powershell
    # Ensure gMSA can write to log directories
-   icacls "C:\vault-client" /grant "example.com\vault-gmsa$":F /T
+   icacls "C:\vault-client" /grant "local.lab\vault-gmsa$":F /T
    ```
 
 #### **Issue 3: Domain Mismatch**
 
 **Symptoms:**
-- Task shows `LOCAL\vault-gmsa$` instead of `example.com\vault-gmsa$`
+- Task shows `LOCAL\vault-gmsa$` instead of `local.lab\vault-gmsa$`
 - Authentication failures
 
 **Solutions:**
 1. **Use full domain name:**
    ```powershell
-   $principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType Password
+   $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password
    ```
 
 2. **Verify gMSA domain:**
@@ -657,7 +657,7 @@ C:\vault-client\config\
 
 2. **Verify Kerberos tickets:**
    ```powershell
-   klist get HTTP/example.com
+   klist get HTTP/local.lab
    ```
 
 ### **Diagnostic Commands**
@@ -673,13 +673,13 @@ Get-WinEvent -LogName "Microsoft-Windows-TaskScheduler/Operational" -MaxEvents 1
 
 # Test gMSA functionality
 Test-ADServiceAccount -Identity "vault-gmsa"
-klist get HTTP/example.com
+klist get HTTP/local.lab
 
 # Check user rights
 whoami /priv | findstr -i "batch\|logon"
 
 # Verify domain connectivity
-Test-NetConnection -ComputerName "addc.example.com" -Port 88
+Test-NetConnection -ComputerName "addc.local.lab" -Port 88
 ```
 
 ---
@@ -736,7 +736,7 @@ This creates:
 **Authentication Flow:**
 ```powershell
 # 1. Get SPNEGO token using Windows SSPI
-$spnegoToken = Get-SPNEGOToken -SPN "HTTP/example.com"
+$spnegoToken = Get-SPNEGOToken -SPN "HTTP/local.lab"
 
 # 2. Authenticate to Vault using the token
 $vaultToken = Invoke-VaultLogin -VaultUrl $VaultUrl -Role $Role -SPNEGOToken $spnegoToken
@@ -758,7 +758,7 @@ $trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
 
 # Register under gMSA identity with correct LogonType
 # Key: Use LogonType ServiceAccount for gMSA (no password stored)
-$principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+$principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName "VaultSecretRefresh" -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 ```
 
@@ -774,12 +774,12 @@ The gMSA must have "Log on as a batch job" right on the client machine:
 # Method 1: Using Local Security Policy (secpol.msc)
 # 1. Run secpol.msc on the client machine
 # 2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job
-# 3. Add: example.com\vault-gmsa$
+# 3. Add: local.lab\vault-gmsa$
 
 # Method 2: Using PowerShell (requires admin rights)
 # Grant the right programmatically
 $userRight = "SeBatchLogonRight"
-$gmsaAccount = "example.com\vault-gmsa$"
+$gmsaAccount = "local.lab\vault-gmsa$"
 
 # This requires the NtRights module or manual registry modification
 # For production, use Group Policy Objects (GPO) instead
@@ -795,7 +795,7 @@ Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
 Get-ADGroupMember Vault-Clients | Where-Object {$_.Name -eq "YOUR-COMPUTER-NAME"}
 
 # 3. Vault server is configured and accessible
-Test-NetConnection example.com -Port 8200
+Test-NetConnection local.lab -Port 8200
 ```
 
 #### **5.6 Customization**
@@ -1083,9 +1083,9 @@ Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
 # Instead, use one of these alternatives:
 
 # Option 1: Create regular service account for keytab
-New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@example.com" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
-setspn -A HTTP/example.com LOCAL\vault-keytab-svc
-ktpass -princ HTTP/example.com@example.com -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@local.lab" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
+setspn -A HTTP/local.lab LOCAL\vault-keytab-svc
+ktpass -princ HTTP/local.lab@local.lab -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
 
 # Option 2: Use gMSA directly without keytab export
 # Configure Windows services to run under gMSA identity directly
@@ -1103,7 +1103,7 @@ Get-ADServiceAccount -Identity "vault-gmsa" | Get-ADPrincipalGroupMembership
 klist -li 0x3e7  # Check if service can get tickets
 
 # Test specific SPN ticket issuance
-klist get HTTP/example.com  # Should show ticket for Vault SPN
+klist get HTTP/local.lab  # Should show ticket for Vault SPN
 ```
 
 #### **Service Issues**
@@ -1161,7 +1161,7 @@ nslookup dc1.yourdomain.com
 
 ## Prereqs
 1. AD domain with KDCs reachable by the Vault server.
-2. A **gMSA** with an SPN for Vault, e.g. `HTTP/vault.example.com`.
+2. A **gMSA** with an SPN for Vault, e.g. `HTTP/vault.local.lab`.
 3. Export a **keytab** for that SPN (or generate via `ktpass`) and place it on the Vault server.
 4. Time sync between Vault and domain controllers.
 5. (Optional) Create AD groups for policy mapping; note their **SIDs**.
@@ -1226,8 +1226,8 @@ vault auth enable -path=gmsa vault-plugin-auth-gmsa
 ```bash
 vault write auth/gmsa/config \
 realm=EXAMPLE.COM \
-kdcs="dc1.example.com,dc2.example.com" \
-spn="HTTP/vault.example.com" \
+kdcs="dc1.local.lab,dc2.local.lab" \
+spn="HTTP/vault.local.lab" \
 keytab="$(base64 -w 0 /etc/vault.d/krb5/vault.keytab)" \
 allow_channel_binding=true \
 clock_skew_sec=300
@@ -1238,11 +1238,11 @@ clock_skew_sec=300
 
 
 ## Client login (Windows workload using gMSA)
-1. The service obtains a Negotiate (SPNEGO) token for SPN `HTTP/vault.example.com` using SSPI.
+1. The service obtains a Negotiate (SPNEGO) token for SPN `HTTP/vault.local.lab` using SSPI.
 2. POST to Vault:
 ```powershell
 $token = [System.Convert]::ToBase64String($spnegoBytes)
-Invoke-RestMethod -Method POST -Uri "https://vault.example.com/v1/auth/gmsa/login" -Body (@{ spnego=$token } | ConvertTo-Json)
+Invoke-RestMethod -Method POST -Uri "https://example.com:8200/v1/auth/gmsa/login" -Body (@{ spnego=$token } | ConvertTo-Json)
 ```
 
 
@@ -1395,9 +1395,9 @@ The plugin supports flexible realm and SPN normalization for different environme
 ```bash
 vault write auth/gmsa/config \
   realm="EXAMPLE.COM" \
-  kdcs="kdc1.example.com,kdc2.example.com" \
+  kdcs="kdc1.local.lab,kdc2.local.lab" \
   keytab="$(base64 -w 0 /path/to/keytab)" \
-  spn="HTTP/vault.example.com" \
+  spn="HTTP/vault.local.lab" \
   # Normalization settings
   realm_case_sensitive=false \
   spn_case_sensitive=false \
@@ -1427,7 +1427,7 @@ Fields on write:
 - `realm` (string, required): Kerberos realm, uppercase (e.g., `EXAMPLE.COM`).
 - `kdcs` (string, required): Comma-separated KDCs, each `host` or `host:port`.
 - `keytab` (string, required): Base64-encoded keytab content for the service account (SPN).
-- `spn` (string, required): e.g., `HTTP/vault.example.com` or `HTTP/vault.example.com@EXAMPLE.COM` (service must be uppercase).
+- `spn` (string, required): e.g., `HTTP/vault.local.lab` or `HTTP/vault.local.lab@EXAMPLE.COM` (service must be uppercase).
 - `allow_channel_binding` (bool): Enforce TLS channel binding (tls-server-end-point) if true.
 - `clock_skew_sec` (int): Allowed clock skew seconds (default 300).
 - **Normalization Settings**:
@@ -1445,8 +1445,8 @@ base64 -w0 /etc/vault.d/krb5/vault.keytab > keytab.b64
 # Basic configuration
 vault write auth/gmsa/config \
   realm=EXAMPLE.COM \
-  kdcs="dc1.example.com,dc2.example.com:88" \
-  spn=HTTP/vault.example.com \
+  kdcs="dc1.local.lab,dc2.local.lab:88" \
+  spn=HTTP/vault.local.lab \
   keytab=@keytab.b64 \
   allow_channel_binding=true \
   clock_skew_sec=300
@@ -1454,8 +1454,8 @@ vault write auth/gmsa/config \
 # Configuration with normalization
 vault write auth/gmsa/config \
   realm=EXAMPLE.COM \
-  kdcs="dc1.example.com,dc2.example.com:88" \
-  spn=HTTP/vault.example.com \
+  kdcs="dc1.local.lab,dc2.local.lab:88" \
+  spn=HTTP/vault.local.lab \
   keytab=@keytab.b64 \
   allow_channel_binding=true \
   clock_skew_sec=300 \
@@ -1491,7 +1491,7 @@ Example:
 vault write auth/gmsa/role/app \
   name=app \
   allowed_realms=EXAMPLE.COM \
-  allowed_spns=HTTP/vault.example.com \
+  allowed_spns=HTTP/vault.local.lab \
   bound_group_sids=S-1-5-21-111-222-333-419 \
   token_policies=default,kv-read \
   token_type=service \
@@ -1516,7 +1516,7 @@ Response:
 Windows example (PowerShell):
 ```powershell
 $token = [Convert]::ToBase64String($spnegoBytes)
-Invoke-RestMethod -Method POST -Uri "https://vault.example.com/v1/auth/gmsa/login" `
+Invoke-RestMethod -Method POST -Uri "https://example.com:8200/v1/auth/gmsa/login" `
   -Body (@{ role = "app"; spnego = $token } | ConvertTo-Json)
 ```
 
@@ -1614,8 +1614,8 @@ Set-ADServiceAccount -Identity "vault-gmsa" -PrincipalsAllowedToRetrieveManagedP
 setspn -L YOURDOMAIN\vault-gmsa$  # Verify SPN exists
 
 # If you need to move SPN to another account, remove it first:
-setspn -D HTTP/example.com vault-gmsa$
-setspn -A HTTP/example.com vault-keytab-svc
+setspn -D HTTP/local.lab vault-gmsa$
+setspn -A HTTP/local.lab vault-keytab-svc
 ```
 
 #### Error: "Cannot find an object with identity"
@@ -1672,9 +1672,9 @@ Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
 # Instead, use one of these alternatives:
 
 # Option 1: Create regular service account for keytab (RECOMMENDED)
-New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@example.com" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
-setspn -A HTTP/example.com LOCAL\vault-keytab-svc
-ktpass -princ HTTP/example.com@example.com -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+New-ADUser -Name "vault-keytab-svc" -UserPrincipalName "vault-keytab-svc@local.lab" -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -Enabled $true -PasswordNeverExpires $true
+setspn -A HTTP/local.lab LOCAL\vault-keytab-svc
+ktpass -princ HTTP/local.lab@local.lab -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
 
 # Option 2: Use gMSA directly without keytab export
 # Configure Windows services to run under gMSA identity directly
@@ -1717,13 +1717,13 @@ Install-WindowsFeature RSAT-AD-PowerShell
 **Problem**: SPN is already assigned to another account.
 ```powershell
 # Remove SPN from gMSA first
-setspn -D HTTP/example.com vault-gmsa$
+setspn -D HTTP/local.lab vault-gmsa$
 
 # Then assign to keytab service account
-setspn -A HTTP/example.com vault-keytab-svc
+setspn -A HTTP/local.lab vault-keytab-svc
 
 # Re-run ktpass
-ktpass -princ HTTP/example.com@LOCAL.LAB -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
+ktpass -princ HTTP/local.lab@LOCAL.LAB -mapuser LOCAL\vault-keytab-svc -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL -pass TempPassword123! -out vault-keytab.keytab
 ```
 
 #### Error: "Failed to set property 'userPrincipalName'"
@@ -1733,7 +1733,7 @@ ktpass -princ HTTP/example.com@LOCAL.LAB -mapuser LOCAL\vault-keytab-svc -crypto
 # What matters is that the SPN → account mapping is correct and the keytab has the matching key
 
 # Verify successful mapping:
-# "Successfully mapped HTTP/example.com to vault-keytab-svc"
+# "Successfully mapped HTTP/local.lab to vault-keytab-svc"
 # "Password successfully set!"
 # "Key created."
 ```
@@ -1753,7 +1753,7 @@ Get-ADServiceAccount -Identity "vault-gmsa" | Get-ADPrincipalGroupMembership
 klist -li 0x3e7  # Check if service can get tickets
 
 # Test specific SPN ticket issuance
-klist get HTTP/example.com  # Should show ticket for Vault SPN
+klist get HTTP/local.lab  # Should show ticket for Vault SPN
 ```
 
 ### Vault Plugin Issues
@@ -1763,8 +1763,8 @@ klist get HTTP/example.com  # Should show ticket for Vault SPN
 ```bash
 vault write auth/gmsa/config \
   realm="LOCAL.LAB" \
-  kdcs="addc.example.com" \
-  spn="HTTP/example.com" \
+  kdcs="addc.local.lab" \
+  spn="HTTP/local.lab" \
   keytab="$(cat /path/to/vault-keytab.b64)" \
   clock_skew_sec=300 \
   allow_channel_binding=true
@@ -1789,7 +1789,7 @@ Get-ADGroup "Vault-Clients" | Select-Object SID
 # Create role with correct SID
 vault write auth/gmsa/role/vault-gmsa-role \
   allowed_realms="LOCAL.LAB" \
-  allowed_spns="HTTP/example.com" \
+  allowed_spns="HTTP/local.lab" \
   bound_group_sids="S-1-5-21-3882383611-320842701-3492440261-1108" \
   token_policies="vault-agent-policy" \
   token_type="service" \
@@ -1853,7 +1853,7 @@ Test-ADServiceAccount -Identity "vault-gmsa"  # Should return True
 #### 2. Verify Keytab Generation
 ```powershell
 # Check SPN mapping
-setspn -L vault-keytab-svc  # Should show HTTP/example.com
+setspn -L vault-keytab-svc  # Should show HTTP/local.lab
 
 # Verify keytab was created
 dir vault-keytab.keytab  # Should exist
@@ -1877,7 +1877,7 @@ vault read auth/gmsa/role/vault-gmsa-role
 #### 4. Test Authentication Flow
 ```powershell
 # On client machine, test Kerberos ticket request
-klist get HTTP/example.com  # Should show ticket for Vault SPN
+klist get HTTP/local.lab  # Should show ticket for Vault SPN
 
 # Test Vault authentication (when running under gMSA identity)
 # This would be done by your application running under the gMSA
@@ -1887,7 +1887,7 @@ klist get HTTP/example.com  # Should show ticket for Vault SPN
 ```
 ✅ gMSA (vault-gmsa$) created and installed on Windows clients
 ✅ Regular service account (vault-keytab-svc) created for keytab generation
-✅ SPN (HTTP/example.com) assigned to keytab service account
+✅ SPN (HTTP/local.lab) assigned to keytab service account
 ✅ Keytab exported and configured in Vault plugin
 ✅ Vault-Clients group contains client computer accounts
 ✅ gMSA allows Vault-Clients group to retrieve managed password
@@ -1923,7 +1923,7 @@ Through extensive testing and troubleshooting, we've identified the critical req
 ### **✅ What Works**
 1. **`-LogonType Password`** - The only correct LogonType for gMSA scheduled tasks
 2. **"Log on as a batch job" rights** - Required on each client machine
-3. **Full domain names** - Use `example.com\vault-gmsa$` not just `vault-gmsa$`
+3. **Full domain names** - Use `local.lab\vault-gmsa$` not just `vault-gmsa$`
 4. **Batch file wrappers** - More reliable than direct PowerShell execution
 5. **Proper path permissions** - Ensure gMSA can write to log directories
 

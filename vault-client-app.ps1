@@ -11,7 +11,7 @@
 param(
     [string]$VaultUrl = "https://example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
-    [string]$SPN = "HTTP/example.com",
+    [string]$SPN = "HTTP/vault.local.lab",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
     [string]$ConfigOutputDir = "C:\vault-client\config",
     [switch]$CreateScheduledTask = $false,
@@ -371,18 +371,18 @@ function Create-ScheduledTask {
         
         # Register task under gMSA identity with correct LogonType
         # Key: Use LogonType Password for gMSA (Windows fetches password from AD)
-        $principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType Password -RunLevel Highest
+        $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType Password -RunLevel Highest
         
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
         
         Write-Log "Scheduled task created successfully: $TaskName"
-        Write-Log "Task runs under: example.com\vault-gmsa$"
+        Write-Log "Task runs under: local.lab\vault-gmsa$"
         Write-Log "Schedule: Daily at 2:00 AM"
         Write-Log ""
         Write-Log "IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -Level "WARNING"
         Write-Log "1. Run secpol.msc on this machine" -Level "WARNING"
         Write-Log "2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job" -Level "WARNING"
-        Write-Log "3. Add: example.com\vault-gmsa$" -Level "WARNING"
+        Write-Log "3. Add: local.lab\vault-gmsa$" -Level "WARNING"
         Write-Log "4. Or configure via GPO if domain-managed" -Level "WARNING"
         
         return $true
@@ -407,7 +407,7 @@ function Start-VaultClientApplication {
         if ($currentIdentity -notlike "*vault-gmsa$") {
             Write-Log "⚠️  WARNING: Not running under gMSA identity!" -Level "WARNING"
             Write-Log "   Current identity: $currentIdentity" -Level "WARNING"
-            Write-Log "   Expected identity: example.com\vault-gmsa$" -Level "WARNING"
+            Write-Log "   Expected identity: local.lab\vault-gmsa$" -Level "WARNING"
             Write-Log "   This will likely cause authentication failures." -Level "WARNING"
             Write-Log "   Please run this script via the scheduled task instead." -Level "WARNING"
         }

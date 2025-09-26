@@ -139,7 +139,7 @@ try {
     Write-Host "Timestamp: $(Get-Date)" -ForegroundColor Yellow
     
     # Step 1: Get SPNEGO token for Vault SPN
-    $spn = "HTTP/example.com"
+    $spn = "HTTP/vault.local.lab"
     Write-Host "Getting SPNEGO token for SPN: $spn"
     $spnegoToken = Get-SPNEGOToken -SPN $spn
     
@@ -271,19 +271,19 @@ Write-Host "Registering scheduled task under gMSA identity..." -ForegroundColor 
 try {
     # Register the task with gMSA identity with correct LogonType
     # Key: Use LogonType ServiceAccount for gMSA (no password stored)
-    $principal = New-ScheduledTaskPrincipal -UserId "example.com\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
+    $principal = New-ScheduledTaskPrincipal -UserId "local.lab\vault-gmsa$" -LogonType ServiceAccount -RunLevel Highest
     
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
     
     Write-Host "✅ Scheduled task '$TaskName' created successfully!" -ForegroundColor Green
-    Write-Host "   - Task runs under: example.com\vault-gmsa$" -ForegroundColor Cyan
+    Write-Host "   - Task runs under: local.lab\vault-gmsa$" -ForegroundColor Cyan
     Write-Host "   - Schedule: Daily at 2:00 AM" -ForegroundColor Cyan
     Write-Host "   - Script location: $ScriptPath" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "⚠️  IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -ForegroundColor Yellow
     Write-Host "   1. Run secpol.msc on this machine" -ForegroundColor Yellow
     Write-Host "   2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job" -ForegroundColor Yellow
-    Write-Host "   3. Add: example.com\vault-gmsa$" -ForegroundColor Yellow
+    Write-Host "   3. Add: local.lab\vault-gmsa$" -ForegroundColor Yellow
     Write-Host "   4. Or configure via GPO if domain-managed" -ForegroundColor Yellow
     
 } catch {
