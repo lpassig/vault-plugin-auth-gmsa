@@ -541,13 +541,15 @@ function Get-SPNEGOToken {
             Write-Log "Kerberos check failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
-        # Fallback: Generate a simulated token
-        Write-Log "Using simulated SPNEGO token for demonstration" -Level "WARNING"
-        $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-        $tokenData = "SIMULATED_SPNEGO_TOKEN_FOR_$TargetSPN_$timestamp"
-        $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($tokenData))
+        # No fallback - real SPNEGO tokens are required
+        Write-Log "Failed to generate real SPNEGO token" -Level "ERROR"
+        Write-Log "Real SPNEGO tokens are required for production use" -Level "ERROR"
+        Write-Log "Check that:" -Level "ERROR"
+        Write-Log "  1. gMSA has valid Kerberos tickets for SPN: $TargetSPN" -Level "ERROR"
+        Write-Log "  2. Vault server is properly configured with keytab" -Level "ERROR"
+        Write-Log "  3. Network connectivity to Vault is working" -Level "ERROR"
         
-        return $spnegoToken
+        return $null
         
     } catch {
         Write-Log "Failed to get SPNEGO token: $($_.Exception.Message)" -Level "ERROR"
@@ -976,19 +978,65 @@ function Start-VaultClientApplication {
         Write-Log "=== Vault Client Application Started ===" -Level "INFO"
         $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         Write-Log "Running under identity: $currentIdentity" -Level "INFO"
+        # Production validation checks
+        Write-Log "Step 0: Production validation checks..." -Level "INFO"
         
         # Check if running under gMSA identity
         if ($currentIdentity -notlike "*vault-gmsa$") {
-            Write-Log "⚠️  WARNING: Not running under gMSA identity!" -Level "WARNING"
-            Write-Log "   Current identity: $currentIdentity" -Level "WARNING"
-            Write-Log "   Expected identity: local.lab\vault-gmsa$" -Level "WARNING"
-            Write-Log "   This will likely cause authentication failures." -Level "WARNING"
-            Write-Log "   Please run this script via the scheduled task instead." -Level "WARNING"
+            Write-Log "❌ CRITICAL: Not running under gMSA identity!" -Level "ERROR"
+            Write-Log "   Current identity: $currentIdentity" -Level "ERROR"
+            Write-Log "   Expected identity: local.lab\vault-gmsa$" -Level "ERROR"
+            Write-Log "   This will cause authentication failures." -Level "ERROR"
+            Write-Log "   SOLUTION: Run this script via the scheduled task with gMSA identity." -Level "ERROR"
+            return $false
         }
-        Write-Log "Vault URL: $VaultUrl" -Level "INFO"
-        Write-Log "Vault Role: $VaultRole" -Level "INFO"
-        Write-Log "SPN: $SPN" -Level "INFO"
-        Write-Log "Secret Paths: $($SecretPaths -join ', ')" -Level "INFO"
+        
+        # Check Kerberos tickets
+        try {
+            $klistOutput = klist 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Log "❌ CRITICAL: No Kerberos tickets found!" -Level "ERROR"
+                Write-Log "   Run 'klist' to check ticket status" -Level "ERROR"
+                Write-Log "   SOLUTION: Ensure gMSA has valid tickets for SPN: $SPN" -Level "ERROR"
+                return $false
+            }
+            
+            if ($klistOutput -notmatch $SPN) {
+                Write-Log "⚠️  WARNING: No Kerberos ticket found for SPN: $SPN" -Level "WARNING"
+                Write-Log "   Available tickets:" -Level "WARNING"
+                Write-Log "   $($klistOutput -join '; ')" -Level "WARNING"
+                Write-Log "   SOLUTION: Request ticket for SPN: $SPN" -Level "WARNING"
+            } else {
+                Write-Log "✅ Kerberos ticket found for SPN: $SPN" -Level "SUCCESS"
+            }
+        } catch {
+            Write-Log "⚠️  WARNING: Could not check Kerberos tickets: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Check network connectivity
+        try {
+            $vaultHost = ($VaultUrl -replace 'https?://', '' -replace ':8200', '')
+            $connection = Test-NetConnection -ComputerName $vaultHost -Port 8200 -WarningAction SilentlyContinue
+            if ($connection.TcpTestSucceeded) {
+                Write-Log "✅ Network connectivity to Vault server confirmed" -Level "SUCCESS"
+            } else {
+                Write-Log "❌ CRITICAL: Cannot connect to Vault server: $vaultHost:8200" -Level "ERROR"
+                Write-Log "   SOLUTION: Check network connectivity and firewall rules" -Level "ERROR"
+                return $false
+            }
+        } catch {
+            Write-Log "⚠️  WARNING: Could not test network connectivity: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        Write-Log "✅ Production validation checks completed" -Level "SUCCESS"
+        
+        # Log configuration
+        Write-Log "Configuration:" -Level "INFO"
+        Write-Log "  Vault URL: $VaultUrl" -Level "INFO"
+        Write-Log "  Vault Role: $VaultRole" -Level "INFO"
+        Write-Log "  SPN: $SPN" -Level "INFO"
+        Write-Log "  Secret Paths: $($SecretPaths -join ', ')" -Level "INFO"
+        Write-Log "  Config Directory: $ConfigOutputDir" -Level "INFO"
         
         # Step 1: Get SPNEGO token
         Write-Log "Step 1: Obtaining SPNEGO token..." -Level "INFO"
@@ -996,17 +1044,13 @@ function Start-VaultClientApplication {
         
         if (-not $spnegoToken) {
             Write-Log "Failed to obtain authentication token" -Level "ERROR"
-            Write-Log "This could be due to:" -Level "ERROR"
-            Write-Log "  - Linux Vault server (gMSA authentication requires special setup)" -Level "ERROR"
-            Write-Log "  - Windows Vault server configuration issues" -Level "ERROR"
-            Write-Log "" -Level "ERROR"
-            Write-Log "FOR LINUX VAULT WITH gMSA:" -Level "ERROR"
-            Write-Log "gMSA passwords are auto-managed by Active Directory and cannot be retrieved." -Level "ERROR"
-            Write-Log "Use one of these approaches:" -Level "ERROR"
-            Write-Log "1. AppRole authentication (recommended)" -Level "ERROR"
-            Write-Log "2. Token-based authentication" -Level "ERROR"
-            Write-Log "3. LDAP with service account proxy" -Level "ERROR"
-            Write-Log "4. Deploy Windows Vault server for native gMSA support" -Level "ERROR"
+            Write-Log "PRODUCTION TROUBLESHOOTING GUIDE:" -Level "ERROR"
+            Write-Log "1. Verify gMSA identity: $currentIdentity" -Level "ERROR"
+            Write-Log "2. Check Kerberos tickets: klist" -Level "ERROR"
+            Write-Log "3. Verify SPN: $SPN" -Level "ERROR"
+            Write-Log "4. Test Vault connectivity: Test-NetConnection vault.example.com -Port 8200" -Level "ERROR"
+            Write-Log "5. Check Vault server logs for authentication errors" -Level "ERROR"
+            Write-Log "6. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
             return $false
         }
         
