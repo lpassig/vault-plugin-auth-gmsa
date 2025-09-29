@@ -236,7 +236,15 @@ function Get-SPNEGOTokenPInvoke {
             $ticketObtained = Request-KerberosTicket -TargetSPN $TargetSPN
             if (-not $ticketObtained) {
                 Write-Log "Failed to obtain Kerberos ticket for $TargetSPN" -Level "WARNING"
-                return $null
+                
+                # Check if we have a TGT (Ticket Granting Ticket) - this might be sufficient
+                if ($klistOutput -match "krbtgt/LOCAL.LAB") {
+                    Write-Log "TGT (Ticket Granting Ticket) found - proceeding with SPNEGO generation" -Level "INFO"
+                    Write-Log "Windows SSPI may be able to generate service ticket on-demand" -Level "INFO"
+                } else {
+                    Write-Log "No TGT found - cannot proceed with SPNEGO generation" -Level "ERROR"
+                    return $null
+                }
             }
         }
         
