@@ -210,6 +210,12 @@ function Update-ScheduledTaskScript {
     )
     
     try {
+        # Verify the script path exists before updating the task
+        if (-not (Test-Path $ScriptPath)) {
+            Write-Host "ERROR: Script path does not exist: $ScriptPath" -ForegroundColor Red
+            return $false
+        }
+        
         $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($existingTask) {
             # Get current task settings
@@ -221,6 +227,8 @@ function Update-ScheduledTaskScript {
             # Create new action with updated script path
             $actionArgs = "-ExecutionPolicy Bypass -File `"$ScriptPath`""
             $newAction = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $actionArgs
+            
+            Write-Host "Updating scheduled task with script path: $ScriptPath" -ForegroundColor Cyan
             
             # Update the task
             Set-ScheduledTask -TaskName $TaskName -Action $newAction -Trigger $currentTrigger -Settings $currentSettings -Principal $currentPrincipal
@@ -234,6 +242,15 @@ function Update-ScheduledTaskScript {
                 $updatedAction = $updatedTask.Actions[0]
                 Write-Host "SUCCESS: Verified scheduled task update successful" -ForegroundColor Green
                 Write-Host "   Task arguments: $($updatedAction.Arguments)" -ForegroundColor Cyan
+                
+                # Verify the script path in the arguments
+                if ($updatedAction.Arguments -like "*`"$ScriptPath`"*") {
+                    Write-Host "SUCCESS: Script path correctly set in task arguments" -ForegroundColor Green
+                } else {
+                    Write-Host "WARNING: Script path may not be correctly set in task arguments" -ForegroundColor Yellow
+                    Write-Host "   Expected: *`"$ScriptPath`"*" -ForegroundColor Cyan
+                    Write-Host "   Actual: $($updatedAction.Arguments)" -ForegroundColor Cyan
+                }
             }
             
             return $true
@@ -272,9 +289,17 @@ function New-VaultClientScheduledTask {
             Write-Host "SUCCESS: Removed existing task: $TaskName" -ForegroundColor Green
         }
         
-        # Create action
+        # Create action with proper script path handling
         $secretPathsParam = $SecretPaths -join '","'
         $actionArgs = "-ExecutionPolicy Bypass -File `"$ScriptPath`" -VaultUrl `"$VaultUrl`" -VaultRole `"$VaultRole`" -SecretPaths @(`"$secretPathsParam`")"
+        
+        # Verify the script path exists before creating the task
+        if (-not (Test-Path $ScriptPath)) {
+            Write-Host "ERROR: Script path does not exist: $ScriptPath" -ForegroundColor Red
+            return $false
+        }
+        
+        Write-Host "Creating scheduled task action with script path: $ScriptPath" -ForegroundColor Cyan
         $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $actionArgs
         
         # Create trigger based on schedule
