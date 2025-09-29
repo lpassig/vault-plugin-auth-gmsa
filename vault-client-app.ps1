@@ -57,6 +57,7 @@ function Write-Log {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
+Write-Log "Script version: 2.0 (with automatic ticket request)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 
