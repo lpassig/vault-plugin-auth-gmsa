@@ -199,6 +199,8 @@ function Copy-ApplicationScript {
             
             # Note: Scheduled task will be created/updated in the main setup process
             
+            Write-Host "DEBUG: About to return targetScript: $targetScript" -ForegroundColor Magenta
+            Write-Host "DEBUG: targetScript type: $($targetScript.GetType().Name)" -ForegroundColor Magenta
             return $targetScript
         } else {
             Write-Host "ERROR: Failed to copy script to: $targetScript" -ForegroundColor Red
@@ -566,13 +568,17 @@ function Start-Setup {
     $dirs = New-ApplicationStructure
     
     # Step 3: Copy application script
+    Write-Host "Calling Copy-ApplicationScript with ScriptsDir: $($dirs.ScriptsDir)" -ForegroundColor Cyan
     $scriptPath = Copy-ApplicationScript -ScriptsDir $dirs.ScriptsDir
     Write-Host "Script path result: $scriptPath" -ForegroundColor Cyan
     Write-Host "Script path type: $($scriptPath.GetType().Name)" -ForegroundColor Cyan
+    Write-Host "Script path is null: $($scriptPath -eq $null)" -ForegroundColor Cyan
+    Write-Host "Script path is false: $($scriptPath -eq $false)" -ForegroundColor Cyan
     
     if (-not $scriptPath) {
         Write-Host "ERROR: Failed to copy application script" -ForegroundColor Red
         Write-Host "Copy-ApplicationScript returned: $scriptPath" -ForegroundColor Red
+        Write-Host "ScriptsDir parameter was: $($dirs.ScriptsDir)" -ForegroundColor Red
         exit 1
     }
     
