@@ -343,53 +343,18 @@ function Get-SPNEGOTokenPInvoke {
             return $null
         }
         
-        # If Win32 SSPI fails, fall back to generating a workaround token
-        Write-Log "WARNING: Win32 SSPI failed to generate real SPNEGO token" -Level "WARNING"
-        Write-Log "This indicates that Windows SSPI needs a 401 challenge to generate SPNEGO tokens" -Level "WARNING"
-        Write-Log "The Vault server is not configured to send WWW-Authenticate: Negotiate headers" -Level "WARNING"
+        # Production-ready: Do NOT generate fake tokens when real SPNEGO generation fails
+        Write-Log "ERROR: Win32 SSPI failed to generate real SPNEGO token" -Level "ERROR"
+        Write-Log "This indicates a Kerberos/SSPI configuration issue that must be resolved" -Level "ERROR"
+        Write-Log "Possible causes:" -Level "ERROR"
+        Write-Log "  1. No valid Kerberos ticket for SPN: $TargetSPN" -Level "ERROR"
+        Write-Log "  2. gMSA account not properly configured" -Level "ERROR"
+        Write-Log "  3. Domain controller connectivity issues" -Level "ERROR"
+        Write-Log "  4. Windows SSPI security context initialization failed" -Level "ERROR"
+        Write-Log "PRODUCTION REQUIREMENT: Only real SPNEGO tokens are accepted by Vault" -Level "ERROR"
+        Write-Log "Fake tokens will be rejected with 'spnego token unmarshal failed' error" -Level "ERROR"
         
-        # Generate a workaround token based on Kerberos ticket information
-        Write-Log "Generating workaround token based on Kerberos ticket information..." -Level "INFO"
-        
-        # Get the Kerberos ticket details
-        $klistOutput = klist 2>&1
-        if ($klistOutput -match $TargetSPN) {
-            Write-Log "Using Kerberos ticket information for workaround token generation" -Level "INFO"
-            
-            # Extract ticket information
-            $ticketInfo = $klistOutput | Where-Object { $_ -match $TargetSPN }
-            Write-Log "Ticket info: $ticketInfo" -Level "INFO"
-            
-            # Generate a workaround token that will be accepted by the Go backend
-            # This is a temporary solution until we can implement real SPNEGO token generation
-            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-            $ticketHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ticketInfo + $timestamp))
-            $ticketHashString = [System.BitConverter]::ToString($ticketHash) -replace '-', ''
-            
-            $spnegoData = "WORKAROUND_SPNEGO_TOKEN_$($ticketHashString.Substring(0,16))_$timestamp"
-            $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($spnegoData))
-            
-            Write-Log "Workaround token generated" -Level "INFO"
-            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-            Write-Log "WARNING: This is a workaround token, not a real SPNEGO token" -Level "WARNING"
-            Write-Log "WARNING: The Go backend may reject this token" -Level "WARNING"
-            
-            return $spnegoToken
-        }
-        
-        # Final fallback: Generate a placeholder token
-        Write-Log "WARNING: Could not generate any SPNEGO token" -Level "WARNING"
-        Write-Log "This indicates that Windows SSPI integration needs additional work" -Level "WARNING"
-        Write-Log "The Vault server may not accept this token" -Level "WARNING"
-        
-        $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-        $spnegoData = "FALLBACK_TOKEN_FOR_$($TargetSPN)_$timestamp"
-        $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($spnegoData))
-        
-        Write-Log "Fallback token generated" -Level "WARNING"
-        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-        
-        return $spnegoToken
+        return $null
         
     } catch {
         Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
