@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.11 (Enhanced Authorization Header Debugging)" -Level "INFO"
+Write-Log "Script version: 3.12 (Multi-Endpoint SPNEGO Trigger)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -663,6 +663,79 @@ function Get-SPNEGOTokenPInvoke {
                         Write-Log "Invoke-WebRequest method failed: $($_.Exception.Message)" -Level "WARNING"
                     }
                     
+                    # Method 4: Try different endpoints to trigger SPNEGO negotiation
+                    try {
+                        Write-Log "Method 4: Trying different endpoints to trigger SPNEGO negotiation..." -Level "INFO"
+                        
+                        $testEndpoints = @(
+                            "/v1/sys/health",
+                            "/v1/sys/status", 
+                            "/v1/sys/seal-status",
+                            "/v1/sys/leader",
+                            "/v1/sys/config",
+                            "/v1/auth/gmsa/config",
+                            "/v1/auth/gmsa/login"
+                        )
+                        
+                        foreach ($endpoint in $testEndpoints) {
+                            Write-Log "Testing endpoint: $endpoint" -Level "INFO"
+                            
+                            try {
+                                $testRequest = [System.Net.WebRequest]::Create("$VaultUrl$endpoint")
+                                $testRequest.Method = "GET"
+                                $testRequest.UseDefaultCredentials = $true
+                                $testRequest.Timeout = 5000
+                                $testRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                                
+                                $testResponse = $testRequest.GetResponse()
+                                Write-Log "Endpoint $endpoint returned: $($testResponse.StatusCode)" -Level "INFO"
+                                
+                                # Check for WWW-Authenticate header
+                                if ($testResponse.Headers -and $testResponse.Headers["WWW-Authenticate"]) {
+                                    Write-Log "SUCCESS: Found WWW-Authenticate header: $($testResponse.Headers['WWW-Authenticate'])" -Level "SUCCESS"
+                                    
+                                    # Check if the request contains Authorization header
+                                    if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
+                                        $authHeader = $testRequest.Headers["Authorization"]
+                                        Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
+                                        if ($authHeader -like "Negotiate *") {
+                                            $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                            Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
+                                            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                            return $spnegoToken
+                                        }
+                                    }
+                                }
+                                
+                                $testResponse.Close()
+                            } catch {
+                                $statusCode = $_.Exception.Response.StatusCode
+                                Write-Log "Endpoint $endpoint returned: $statusCode" -Level "INFO"
+                                
+                                # Check for WWW-Authenticate header in error response
+                                if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
+                                    Write-Log "SUCCESS: Found WWW-Authenticate header in error: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "SUCCESS"
+                                    
+                                    # Check if the request contains Authorization header
+                                    if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
+                                        $authHeader = $testRequest.Headers["Authorization"]
+                                        Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
+                                        if ($authHeader -like "Negotiate *") {
+                                            $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                            Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
+                                            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                            return $spnegoToken
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Log "Method 4 failed: $($_.Exception.Message)" -Level "WARNING"
+                    }
+                    
                 } catch {
                     Write-Log "Alternative method failed: $($_.Exception.Message)" -Level "WARNING"
                 }
@@ -1035,7 +1108,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.11 (Enhanced Authorization Header Debugging)" -Level "INFO"
+        Write-Log "Script version: 3.12 (Multi-Endpoint SPNEGO Trigger)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
