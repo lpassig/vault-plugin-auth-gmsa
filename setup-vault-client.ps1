@@ -225,10 +225,12 @@ function Update-ScheduledTaskScript {
             $currentPrincipal = $existingTask.Principal
             
             # Create new action with updated script path
-            $actionArgs = "-ExecutionPolicy Bypass -File `"$ScriptPath`""
+            $absoluteScriptPath = (Resolve-Path $ScriptPath).Path
+            $actionArgs = "-ExecutionPolicy Bypass -File `"$absoluteScriptPath`""
             $newAction = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $actionArgs
             
-            Write-Host "Updating scheduled task with script path: $ScriptPath" -ForegroundColor Cyan
+            Write-Host "Updating scheduled task with absolute script path: $absoluteScriptPath" -ForegroundColor Cyan
+            Write-Host "Task arguments: $actionArgs" -ForegroundColor Cyan
             
             # Update the task
             Set-ScheduledTask -TaskName $TaskName -Action $newAction -Trigger $currentTrigger -Settings $currentSettings -Principal $currentPrincipal
@@ -244,11 +246,11 @@ function Update-ScheduledTaskScript {
                 Write-Host "   Task arguments: $($updatedAction.Arguments)" -ForegroundColor Cyan
                 
                 # Verify the script path in the arguments
-                if ($updatedAction.Arguments -like "*`"$ScriptPath`"*") {
+                if ($updatedAction.Arguments -like "*`"$absoluteScriptPath`"*") {
                     Write-Host "SUCCESS: Script path correctly set in task arguments" -ForegroundColor Green
                 } else {
                     Write-Host "WARNING: Script path may not be correctly set in task arguments" -ForegroundColor Yellow
-                    Write-Host "   Expected: *`"$ScriptPath`"*" -ForegroundColor Cyan
+                    Write-Host "   Expected: *`"$absoluteScriptPath`"*" -ForegroundColor Cyan
                     Write-Host "   Actual: $($updatedAction.Arguments)" -ForegroundColor Cyan
                 }
             }
@@ -291,7 +293,6 @@ function New-VaultClientScheduledTask {
         
         # Create action with proper script path handling
         $secretPathsParam = $SecretPaths -join '","'
-        $actionArgs = "-ExecutionPolicy Bypass -File `"$ScriptPath`" -VaultUrl `"$VaultUrl`" -VaultRole `"$VaultRole`" -SecretPaths @(`"$secretPathsParam`")"
         
         # Verify the script path exists before creating the task
         if (-not (Test-Path $ScriptPath)) {
@@ -299,7 +300,14 @@ function New-VaultClientScheduledTask {
             return $false
         }
         
-        Write-Host "Creating scheduled task action with script path: $ScriptPath" -ForegroundColor Cyan
+        # Use absolute path and ensure proper escaping
+        $absoluteScriptPath = (Resolve-Path $ScriptPath).Path
+        Write-Host "Creating scheduled task action with absolute script path: $absoluteScriptPath" -ForegroundColor Cyan
+        
+        # Create arguments with proper escaping
+        $actionArgs = "-ExecutionPolicy Bypass -File `"$absoluteScriptPath`" -VaultUrl `"$VaultUrl`" -VaultRole `"$VaultRole`" -SecretPaths @(`"$secretPathsParam`")"
+        
+        Write-Host "Task arguments: $actionArgs" -ForegroundColor Cyan
         $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $actionArgs
         
         # Create trigger based on schedule
@@ -425,7 +433,8 @@ function Test-Setup {
         
         # Check if script exists
         if (Test-Path $ScriptPath) {
-            Write-Host "SUCCESS: Application script exists: $ScriptPath" -ForegroundColor Green
+            $absoluteScriptPath = (Resolve-Path $ScriptPath).Path
+            Write-Host "SUCCESS: Application script exists: $absoluteScriptPath" -ForegroundColor Green
             
             # Verify script version
             $scriptContent = Get-Content $ScriptPath -Raw
@@ -435,6 +444,16 @@ function Test-Setup {
             # Check script size
             $scriptSize = (Get-Item $ScriptPath).Length
             Write-Host "   - Script size: $scriptSize bytes" -ForegroundColor Cyan
+            
+            # Verify the scheduled task is pointing to the correct script
+            $taskAction = $task.Actions[0]
+            if ($taskAction.Arguments -like "*`"$absoluteScriptPath`"*") {
+                Write-Host "SUCCESS: Scheduled task points to correct script path" -ForegroundColor Green
+            } else {
+                Write-Host "WARNING: Scheduled task may not point to correct script path" -ForegroundColor Yellow
+                Write-Host "   Expected: *`"$absoluteScriptPath`"*" -ForegroundColor Cyan
+                Write-Host "   Actual: $($taskAction.Arguments)" -ForegroundColor Cyan
+            }
         } else {
             Write-Host "ERROR: Application script not found: $ScriptPath" -ForegroundColor Red
             return $false
