@@ -9,7 +9,7 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://vault.example.com:8200",
+    [string]$VaultUrl = "https://vault.local.lab:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
