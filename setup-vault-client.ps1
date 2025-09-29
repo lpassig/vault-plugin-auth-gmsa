@@ -11,8 +11,54 @@ param(
     [string]$TaskName = "VaultClientApp",
     [string]$Schedule = "Daily",
     [string]$Time = "02:00",
-    [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api")
+    [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
+    [switch]$ForceUpdate,
+    [switch]$CheckUpdates
 )
+
+# =============================================================================
+# Check for Updates
+# =============================================================================
+
+function Test-ScriptUpdates {
+    param([string]$ScriptsDir)
+    
+    Write-Host "Checking for script updates..." -ForegroundColor Yellow
+    
+    $sourceScript = "vault-client-app.ps1"
+    $targetScript = "$ScriptsDir\vault-client-app.ps1"
+    
+    if (-not (Test-Path $sourceScript)) {
+        Write-Host "❌ Source script not found: $sourceScript" -ForegroundColor Red
+        return $false
+    }
+    
+    if (-not (Test-Path $targetScript)) {
+        Write-Host "⚠️ Target script not found: $targetScript" -ForegroundColor Yellow
+        Write-Host "Run setup without -CheckUpdates to create the initial installation" -ForegroundColor Cyan
+        return $false
+    }
+    
+    # Extract version from source script
+    $sourceContent = Get-Content $sourceScript -Raw
+    $sourceVersion = if ($sourceContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
+    
+    # Extract version from target script
+    $targetContent = Get-Content $targetScript -Raw
+    $targetVersion = if ($targetContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
+    
+    Write-Host "Source script version: $sourceVersion" -ForegroundColor Cyan
+    Write-Host "Target script version: $targetVersion" -ForegroundColor Cyan
+    
+    if ($sourceVersion -eq $targetVersion -and $sourceVersion -ne "unknown") {
+        Write-Host "✅ Script versions match, no update needed" -ForegroundColor Green
+        return $false
+    } else {
+        Write-Host "⚠️ Script versions differ, update available!" -ForegroundColor Yellow
+        Write-Host "Run: .\setup-vault-client.ps1 -ForceUpdate" -ForegroundColor Cyan
+        return $true
+    }
+}
 
 # =============================================================================
 # Prerequisites Check
@@ -105,13 +151,92 @@ function Copy-ApplicationScript {
     $targetScript = "$ScriptsDir\vault-client-app.ps1"
     
     if (Test-Path $sourceScript) {
-        Copy-Item $sourceScript $targetScript -Force
-        Write-Host "✅ Application script copied to: $targetScript" -ForegroundColor Green
+        # Check if target script exists and compare versions
+        $needsUpdate = $ForceUpdate
+        if (Test-Path $targetScript) {
+            Write-Host "Target script exists, checking for updates..." -ForegroundColor Cyan
+            
+            # Extract version from source script
+            $sourceContent = Get-Content $sourceScript -Raw
+            $sourceVersion = if ($sourceContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
+            
+            # Extract version from target script
+            $targetContent = Get-Content $targetScript -Raw
+            $targetVersion = if ($targetContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
+            
+            Write-Host "Source script version: $sourceVersion" -ForegroundColor Cyan
+            Write-Host "Target script version: $targetVersion" -ForegroundColor Cyan
+            
+            if ($ForceUpdate) {
+                Write-Host "⚠️ Force update requested, updating script..." -ForegroundColor Yellow
+            } elseif ($sourceVersion -eq $targetVersion -and $sourceVersion -ne "unknown") {
+                Write-Host "✅ Script versions match, no update needed" -ForegroundColor Green
+                $needsUpdate = $false
+            } else {
+                Write-Host "⚠️ Script versions differ, updating..." -ForegroundColor Yellow
+            }
+        }
+        
+        if ($needsUpdate) {
+            # Create backup of existing script
+            if (Test-Path $targetScript) {
+                $backupScript = "$targetScript.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+                Copy-Item $targetScript $backupScript -Force
+                Write-Host "✅ Created backup: $backupScript" -ForegroundColor Green
+            }
+            
+            # Copy the updated script
+            Copy-Item $sourceScript $targetScript -Force
+            Write-Host "✅ Application script updated: $targetScript" -ForegroundColor Green
+            
+            # Update scheduled task to use the new script
+            Write-Host "Updating scheduled task to use new script..." -ForegroundColor Yellow
+            Update-ScheduledTaskScript -TaskName $TaskName -ScriptPath $targetScript
+        }
+        
         return $targetScript
     } else {
         Write-Host "❌ Source script not found: $sourceScript" -ForegroundColor Red
         Write-Host "Make sure vault-client-app.ps1 is in the current directory" -ForegroundColor Yellow
         return $null
+    }
+}
+
+# =============================================================================
+# Update Scheduled Task Script
+# =============================================================================
+
+function Update-ScheduledTaskScript {
+    param(
+        [string]$TaskName,
+        [string]$ScriptPath
+    )
+    
+    try {
+        $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($existingTask) {
+            # Get current task settings
+            $currentAction = $existingTask.Actions[0]
+            $currentTrigger = $existingTask.Triggers[0]
+            $currentSettings = $existingTask.Settings
+            $currentPrincipal = $existingTask.Principal
+            
+            # Create new action with updated script path
+            $actionArgs = "-ExecutionPolicy Bypass -File `"$ScriptPath`""
+            $newAction = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $actionArgs
+            
+            # Update the task
+            Set-ScheduledTask -TaskName $TaskName -Action $newAction -Trigger $currentTrigger -Settings $currentSettings -Principal $currentPrincipal
+            
+            Write-Host "✅ Scheduled task updated with new script path" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "⚠️ Scheduled task not found, will be created during setup" -ForegroundColor Yellow
+            return $false
+        }
+    } catch {
+        Write-Host "❌ Failed to update scheduled task: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
     }
 }
 
@@ -316,6 +441,19 @@ function Start-Setup {
     Write-Host "Secret Paths: $($SecretPaths -join ', ')" -ForegroundColor Cyan
     Write-Host ""
     
+    # Handle CheckUpdates parameter
+    if ($CheckUpdates) {
+        Write-Host "=== Checking for Updates ===" -ForegroundColor Yellow
+        $dirs = New-ApplicationStructure
+        $hasUpdates = Test-ScriptUpdates -ScriptsDir $dirs.ScriptsDir
+        if ($hasUpdates) {
+            Write-Host ""
+            Write-Host "To apply updates, run:" -ForegroundColor Yellow
+            Write-Host ".\setup-vault-client.ps1 -ForceUpdate" -ForegroundColor Cyan
+        }
+        return
+    }
+    
     # Step 1: Check prerequisites
     if (-not (Test-Prerequisites)) {
         Write-Host "❌ Prerequisites check failed" -ForegroundColor Red
@@ -355,6 +493,8 @@ function Start-Setup {
         Write-Host "   Get-Content '$($dirs.ConfigDir)\vault-client.log'" -ForegroundColor Gray
         Write-Host "4. Check output files:" -ForegroundColor White
         Write-Host "   Get-ChildItem '$($dirs.ConfigDir)'" -ForegroundColor Gray
+        Write-Host "5. Check for updates:" -ForegroundColor White
+        Write-Host "   .\setup-vault-client.ps1 -CheckUpdates" -ForegroundColor Gray
         Write-Host ""
         Write-Host "⚠️  IMPORTANT: The application MUST run under gMSA identity to work properly." -ForegroundColor Yellow
         Write-Host "   Manual execution (running the script directly) will fail because it runs under your user account." -ForegroundColor Yellow
@@ -395,6 +535,15 @@ USAGE EXAMPLES:
 
 5. Custom task name:
    .\setup-vault-client.ps1 -TaskName "MyVaultApp"
+
+6. Check for script updates:
+   .\setup-vault-client.ps1 -CheckUpdates
+
+7. Force update script (when updates are available):
+   .\setup-vault-client.ps1 -ForceUpdate
+
+8. Force update with custom parameters:
+   .\setup-vault-client.ps1 -ForceUpdate -VaultUrl "https://vault.company.com:8200"
 
 WHAT THIS SETUP DOES:
 - Checks prerequisites (Administrator, gMSA, Vault connectivity)
