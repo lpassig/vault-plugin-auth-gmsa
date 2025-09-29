@@ -99,7 +99,7 @@ function Get-SPNEGOTokenSSPI {
                 Write-Log "Trying SPN format: $spn"
                 
                 # Create a request to trigger SPNEGO negotiation
-                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/sys/health")
+                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
                 
                 # Send the request to trigger Windows authentication
                 $response = $client.SendAsync($request).Result
@@ -179,7 +179,7 @@ function Get-SPNEGOTokenReal {
                 Write-Log "Trying SPN format: $spn"
                 
                 # Create a request to trigger SPNEGO negotiation
-                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/sys/health")
+                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
                 
                 # Send the request to trigger Windows authentication
                 $response = $client.SendAsync($request).Result
@@ -258,7 +258,7 @@ function Get-SPNEGOTokenPInvoke {
                 Write-Log "Trying SPN format: $spn"
                 
                 # Create a request to trigger SPNEGO negotiation
-                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/sys/health")
+                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
                 
                 # Send the request to trigger Windows authentication
                 $response = $client.SendAsync($request).Result
