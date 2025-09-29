@@ -231,88 +231,18 @@ function Get-SPNEGOTokenPInvoke {
     )
     
     try {
-        Write-Log "Generating SPNEGO token using P/Invoke for SPN: $TargetSPN"
+        Write-Log "Generating SPNEGO token using Windows SSPI for SPN: $TargetSPN"
         
-        # Define P/Invoke declarations for SSPI
-        $sspiCode = @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public class SSPIHelper
-{
-    [DllImport("secur32.dll", CharSet = CharSet.Unicode)]
-    public static extern int AcquireCredentialsHandle(
-        string pszPrincipal,
-        string pszPackage,
-        int fCredentialUse,
-        IntPtr pvLogonId,
-        IntPtr pAuthData,
-        IntPtr pGetKeyFn,
-        IntPtr pvGetKeyArgument,
-        ref SECURITY_HANDLE phCredential,
-        ref SECURITY_INTEGER ptsExpiry);
-
-    [DllImport("secur32.dll", CharSet = CharSet.Unicode)]
-    public static extern int InitializeSecurityContext(
-        ref SECURITY_HANDLE phCredential,
-        IntPtr phContext,
-        string pszTargetName,
-        int fContextReq,
-        int Reserved1,
-        int TargetDataRep,
-        IntPtr pInput,
-        int Reserved2,
-        ref SECURITY_HANDLE phNewContext,
-        ref SEC_BUFFER_DESC pOutput,
-        out int pfContextAttr,
-        ref SECURITY_INTEGER ptsExpiry);
-
-    [DllImport("secur32.dll")]
-    public static extern int FreeCredentialsHandle(ref SECURITY_HANDLE phCredential);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SECURITY_HANDLE
-    {
-        public IntPtr dwLower;
-        public IntPtr dwUpper;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SECURITY_INTEGER
-    {
-        public uint LowPart;
-        public int HighPart;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SEC_BUFFER_DESC
-    {
-        public uint ulVersion;
-        public uint cBuffers;
-        public IntPtr pBuffers;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SEC_BUFFER
-    {
-        public uint cbBuffer;
-        public uint BufferType;
-        public IntPtr pvBuffer;
-    }
-
-    public const int SECPKG_CRED_OUTBOUND = 2;
-    public const int ISC_REQ_CONFIDENTIALITY = 0x00000010;
-    public const int ISC_REQ_INTEGRITY = 0x00010000;
-    public const int ISC_REQ_MUTUAL_AUTH = 0x00000002;
-    public const int SECURITY_NATIVE_DREP = 0x00000010;
-    public const int SECBUFFER_TOKEN = 2;
-    public const int SEC_I_CONTINUE_NEEDED = 0x90312;
-}
-"@
+        # Use a simpler approach with .NET HttpClient and Windows authentication
+        # This will trigger real SPNEGO negotiation
+        Add-Type -AssemblyName System.Net.Http
         
-        # Compile the SSPI helper
-        Add-Type -TypeDefinition $sspiCode -Language CSharp
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        $handler.UseDefaultCredentials = $true
+        $handler.PreAuthenticate = $true
+        
+        $client = New-Object System.Net.Http.HttpClient($handler)
+        $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
         
         # Try different SPN formats
         $spnFormats = @(
@@ -327,109 +257,37 @@ public class SSPIHelper
             try {
                 Write-Log "Trying SPN format: $spn"
                 
-                # Initialize SSPI structures
-                $credHandle = New-Object SSPIHelper+SECURITY_HANDLE
-                $contextHandle = New-Object SSPIHelper+SECURITY_HANDLE
-                $expiry = New-Object SSPIHelper+SECURITY_INTEGER
+                # Create a request to trigger SPNEGO negotiation
+                $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/sys/health")
                 
-                # Create output buffer descriptor
-                $outputBufferDesc = New-Object SSPIHelper+SEC_BUFFER_DESC
-                $outputBufferDesc.ulVersion = 0
-                $outputBufferDesc.cBuffers = 1
+                # Send the request to trigger Windows authentication
+                $response = $client.SendAsync($request).Result
                 
-                # Create output buffer
-                $outputBuffer = New-Object SSPIHelper+SEC_BUFFER
-                $outputBuffer.cbBuffer = 0
-                $outputBuffer.BufferType = [SSPIHelper]::SECBUFFER_TOKEN
-                $outputBuffer.pvBuffer = [IntPtr]::Zero
+                Write-Log "Response status: $($response.StatusCode)"
                 
-                # Allocate memory for output buffer
-                $bufferSize = 4096
-                $bufferPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
-                $outputBuffer.cbBuffer = $bufferSize
-                $outputBuffer.pvBuffer = $bufferPtr
+                # Check if Authorization header was added (indicates SPNEGO token was generated)
+                if ($response.RequestMessage.Headers.Contains("Authorization")) {
+                    $authHeader = $response.RequestMessage.Headers.GetValues("Authorization")
+                    if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                        Write-Log "Real SPNEGO token generated successfully for SPN: $spn"
+                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
+                        $client.Dispose()
+                        return $spnegoToken
+                    }
+                }
                 
-                # Set the buffer pointer in the descriptor
-                $bufferDescPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf($outputBuffer))
-                [System.Runtime.InteropServices.Marshal]::StructureToPtr($outputBuffer, $bufferDescPtr, $false)
-                $outputBufferDesc.pBuffers = $bufferDescPtr
-                
-                # Acquire credentials
-                $result = [SSPIHelper]::AcquireCredentialsHandle(
-                    $null,
-                    "Negotiate",
-                    [SSPIHelper]::SECPKG_CRED_OUTBOUND,
-                    [IntPtr]::Zero,
-                    [IntPtr]::Zero,
-                    [IntPtr]::Zero,
-                    [IntPtr]::Zero,
-                    [ref]$credHandle,
-                    [ref]$expiry
-                )
-                
-                if ($result -eq 0) {
-                    Write-Log "Credentials acquired successfully for SPN: $spn"
-                    
-                    # Initialize security context
-                    $contextAttr = 0
-                    $result = [SSPIHelper]::InitializeSecurityContext(
-                        [ref]$credHandle,
-                        [IntPtr]::Zero,
-                        $spn,
-                        [SSPIHelper]::ISC_REQ_CONFIDENTIALITY -bor [SSPIHelper]::ISC_REQ_INTEGRITY,
-                        0,
-                        [SSPIHelper]::SECURITY_NATIVE_DREP,
-                        [IntPtr]::Zero,
-                        0,
-                        [ref]$contextHandle,
-                        [ref]$outputBufferDesc,
-                        [out]$contextAttr,
-                        [ref]$expiry
-                    )
-                    
-                    if ($result -eq 0 -or $result -eq [SSPIHelper]::SEC_I_CONTINUE_NEEDED) {
-                        Write-Log "SPNEGO token generated successfully for SPN: $spn"
-                        
-                        # Extract token from output buffer
-                        if ($outputBuffer.cbBuffer -gt 0) {
-                            $tokenBytes = New-Object byte[] $outputBuffer.cbBuffer
-                            [System.Runtime.InteropServices.Marshal]::Copy($outputBuffer.pvBuffer, $tokenBytes, 0, $outputBuffer.cbBuffer)
-                            $spnegoToken = [System.Convert]::ToBase64String($tokenBytes)
-                            Write-Log "Real SPNEGO token generated successfully"
-                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
-                            
-                            # Clean up
-                            [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferPtr)
-                            [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferDescPtr)
-                            [SSPIHelper]::FreeCredentialsHandle([ref]$credHandle)
-                            
+                # If we get a 401, that's expected - try to extract token from response
+                if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+                    if ($response.Headers.Contains("WWW-Authenticate")) {
+                        $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
+                        if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
+                            $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
+                            Write-Log "Real SPNEGO token extracted from WWW-Authenticate header for SPN: $spn"
+                            $client.Dispose()
                             return $spnegoToken
-                        } else {
-                            Write-Log "No token data in output buffer" -Level "WARNING"
-                        }
-                    } else {
-                        Write-Log "Failed to initialize security context for SPN '$spn': 0x$($result.ToString('X8'))" -Level "WARNING"
-                        
-                        # Decode common error codes
-                        switch ($result) {
-                            0x80090308 { Write-Log "Error: SEC_E_TARGET_UNKNOWN - Target SPN not found" -Level "WARNING" }
-                            0x8009030C { Write-Log "Error: SEC_E_UNKNOWN_CREDENTIALS - Unknown credentials" -Level "WARNING" }
-                            0x8009030D { Write-Log "Error: SEC_E_NO_CREDENTIALS - No credentials available" -Level "WARNING" }
-                            default { Write-Log "Error: Unknown SSPI error code 0x$($result.ToString('X8'))" -Level "WARNING" }
                         }
                     }
-                    
-                    # Clean up
-                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferPtr)
-                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferDescPtr)
-                    [SSPIHelper]::FreeCredentialsHandle([ref]$credHandle)
-                    
-                } else {
-                    Write-Log "Failed to acquire credentials for SPN '$spn': 0x$($result.ToString('X8'))" -Level "WARNING"
-                    
-                    # Clean up
-                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferPtr)
-                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferDescPtr)
                 }
                 
             } catch {
@@ -438,11 +296,12 @@ public class SSPIHelper
             }
         }
         
-        Write-Log "All SPN formats failed for P/Invoke SPNEGO generation" -Level "WARNING"
+        $client.Dispose()
+        Write-Log "All SPN formats failed for Windows SSPI SPNEGO generation" -Level "WARNING"
         return $null
         
     } catch {
-        Write-Log "P/Invoke SPNEGO generation failed: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "Windows SSPI SPNEGO generation failed: $($_.Exception.Message)" -Level "ERROR"
         return $null
     }
 }
