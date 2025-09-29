@@ -9,7 +9,7 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://vault.example.com:8200",
+    [string]$VaultUrl = "https://vault.local.lab:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
@@ -57,8 +57,8 @@ try {
     $vaultHost = [System.Uri]::new($VaultUrl).Host
     Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
     
-    # Map vault.local.lab to vault.example.com for Kerberos
-    $vaultIP = "10.0.101.151"  # Your test environment IP
+    # Map vault.local.lab to the correct IP for Kerberos
+    $vaultIP = "127.0.0.1"  # Local Vault server IP
     Write-Host "Mapping vault.local.lab ($vaultIP) for Kerberos authentication" -ForegroundColor Cyan
     
     # Check if vault.local.lab resolves
@@ -407,8 +407,12 @@ function Request-KerberosTicket {
             
             try {
                 $response = $client.GetAsync("https://$hostname").Result
-                Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
-                $response.Dispose()
+                if ($response -ne $null) {
+                    Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
+                    $response.Dispose()
+                } else {
+                    Write-Log "HttpClient request completed but response is null" -Level "INFO"
+                }
             } catch {
                 if ($_.Exception.InnerException -and $_.Exception.InnerException.Response) {
                     $statusCode = $_.Exception.InnerException.Response.StatusCode
@@ -447,7 +451,7 @@ function Request-KerberosTicket {
             Write-Log "Using hostname for request: $hostname" -Level "INFO"
             
             try {
-                $response = Invoke-WebRequest -Uri "https://$hostname" -UseDefaultCredentials -TimeoutSec 10 -ErrorAction Stop
+                $response = Invoke-WebRequest -Uri "https://$hostname" -UseDefaultCredentials -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
                 Write-Log "Invoke-WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
             } catch {
                 if ($_.Exception.Response) {
@@ -1500,7 +1504,7 @@ function Start-VaultClientApplication {
             Write-Log "1. Verify gMSA identity: $currentIdentity" -Level "ERROR"
             Write-Log "2. Check Kerberos tickets: klist" -Level "ERROR"
             Write-Log "3. Verify SPN: $SPN" -Level "ERROR"
-            Write-Log "4. Test Vault connectivity: Test-NetConnection vault.example.com -Port 8200" -Level "ERROR"
+            Write-Log "4. Test Vault connectivity: Test-NetConnection vault.local.lab -Port 8200" -Level "ERROR"
             Write-Log "5. Check Vault server logs for authentication errors" -Level "ERROR"
             Write-Log "6. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
             return $false
