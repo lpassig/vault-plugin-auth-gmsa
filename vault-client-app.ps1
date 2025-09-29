@@ -408,18 +408,18 @@ function Request-KerberosTicket {
             try {
                 $response = $client.GetAsync("https://$hostname").Result
                 if ($response -ne $null) {
-                    Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
-                    $response.Dispose()
+                Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
+                $response.Dispose()
                 } else {
                     Write-Log "HttpClient request completed but response is null" -Level "INFO"
                 }
             } catch {
                 if ($_.Exception.InnerException -and $_.Exception.InnerException.Response) {
                     $statusCode = $_.Exception.InnerException.Response.StatusCode
-                    Write-Log "HttpClient request returned: $statusCode" -Level "INFO"
-                    
-                    if ($statusCode -eq 401) {
-                        Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                Write-Log "HttpClient request returned: $statusCode" -Level "INFO"
+                
+                if ($statusCode -eq 401) {
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
                     }
                 } else {
                     Write-Log "HttpClient request failed with non-HTTP error: $($_.Exception.Message)" -Level "WARNING"
@@ -455,11 +455,11 @@ function Request-KerberosTicket {
                 Write-Log "Invoke-WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
             } catch {
                 if ($_.Exception.Response) {
-                    $statusCode = $_.Exception.Response.StatusCode
-                    Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
-                    
-                    if ($statusCode -eq 401) {
-                        Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                $statusCode = $_.Exception.Response.StatusCode
+                Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
+                
+                if ($statusCode -eq 401) {
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
                     }
                 } else {
                     Write-Log "Invoke-WebRequest failed with non-HTTP error: $($_.Exception.Message)" -Level "WARNING"
@@ -556,14 +556,55 @@ function Get-SPNEGOTokenPInvoke {
                             return $authResponse.auth.client_token
                         }
                     }
-                } catch {
-                    $statusCode = $_.Exception.Response.StatusCode
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode
                     Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
                     Write-Log "Exception message: $($_.Exception.Message)" -Level "INFO"
                     
                     if ($statusCode -eq 401) {
                         Write-Log "SUCCESS: 401 Unauthorized - Windows authentication triggered" -Level "SUCCESS"
                         Write-Log "This means Windows SSPI is working correctly" -Level "INFO"
+                        
+                        # Check if we can extract the SPNEGO token from the request headers
+                        # Note: Invoke-WebRequest doesn't expose request headers directly, so we need to use a different approach
+                        Write-Log "Attempting to capture SPNEGO token using WebRequest..." -Level "INFO"
+                        
+                        # Use WebRequest to capture the Authorization header
+                        $webRequest = [System.Net.WebRequest]::Create($requestUrl)
+                        $webRequest.Method = "POST"
+                        $webRequest.ContentType = "application/json"
+                        $webRequest.UseDefaultCredentials = $true
+                        $webRequest.PreAuthenticate = $true
+                        $webRequest.Timeout = 10000
+                        $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                        
+                        # Add request body
+                        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+                        $webRequest.ContentLength = $bodyBytes.Length
+                        
+                        $requestStream = $webRequest.GetRequestStream()
+                        $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                        $requestStream.Close()
+                        
+                        try {
+                            $webResponse = $webRequest.GetResponse()
+                            Write-Log "WebRequest completed with status: $($webResponse.StatusCode)" -Level "INFO"
+                            $webResponse.Close()
+                        } catch {
+                            $webStatusCode = $_.Exception.Response.StatusCode
+                            Write-Log "WebRequest returned: $webStatusCode" -Level "INFO"
+                            
+                            # Check if Authorization header was added
+                            if ($webRequest.Headers.Contains("Authorization")) {
+                                $authHeader = $webRequest.Headers.GetValues("Authorization")
+                                if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                                    $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                                    Write-Log "SUCCESS: Real SPNEGO token captured from WebRequest!" -Level "SUCCESS"
+                                    Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                                    return $spnegoToken
+                                }
+                            }
+                        }
                     } else {
                         Write-Log "Request failed with status: $statusCode" -Level "WARNING"
                     }
@@ -613,9 +654,9 @@ function Get-SPNEGOTokenPInvoke {
                 if ($_.Exception.InnerException -ne $null -and $_.Exception.InnerException.Response -ne $null) {
                     $statusCode = $_.Exception.InnerException.Response.StatusCode
                     Write-Log "HttpClient request returned: $statusCode" -Level "INFO"
-                    
-                    if ($statusCode -eq 401) {
-                        Write-Log "SUCCESS: 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+                
+                if ($statusCode -eq 401) {
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
                     }
                 } else {
                     Write-Log "HttpClient request failed: $($_.Exception.Message)" -Level "WARNING"
@@ -624,102 +665,105 @@ function Get-SPNEGOTokenPInvoke {
             
             $client.Dispose()
             
-            # Method 3: Proper SPNEGO negotiation flow
-            Write-Log "Trying proper SPNEGO negotiation flow..." -Level "INFO"
+            # Method 3: Proper SPNEGO negotiation flow using HttpClient
+            Write-Log "Trying proper SPNEGO negotiation flow with HttpClient..." -Level "INFO"
             
             try {
-                # Step 1: Make initial request without credentials to get 401 challenge
+                # Create HttpClient with Windows authentication
+                $handler = New-Object System.Net.Http.HttpClientHandler
+                $handler.UseDefaultCredentials = $true
+                $handler.PreAuthenticate = $true
+                $handler.ServerCertificateCustomValidationCallback = { $true }
+                
+                $client = New-Object System.Net.Http.HttpClient($handler)
+                $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+                $client.Timeout = [TimeSpan]::FromSeconds(15)
+                
+                # Step 1: Make initial request to trigger 401 challenge
                 Write-Log "Step 1: Making initial request to trigger 401 challenge..." -Level "INFO"
                 
-                $initialRequest = [System.Net.HttpWebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
-                $initialRequest.Method = "POST"
-                $initialRequest.ContentType = "application/json"
-                $initialRequest.Timeout = 10000
-                $initialRequest.UserAgent = "Vault-gMSA-Client/1.0"
-                
-                # Add request body
-                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes('{"role":"vault-gmsa-role"}')
-                $initialRequest.ContentLength = $bodyBytes.Length
-                
-                $requestStream = $initialRequest.GetRequestStream()
-                $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
-                $requestStream.Close()
+                $loginBody = '{"role":"vault-gmsa-role"}'
+                $content = New-Object System.Net.Http.StringContent($loginBody, [System.Text.Encoding]::UTF8, "application/json")
                 
                 try {
-                    $initialResponse = $initialRequest.GetResponse()
-                    Write-Log "Initial request completed with status: $($initialResponse.StatusCode)" -Level "INFO"
-                    $initialResponse.Close()
+                    $response = $client.PostAsync("$VaultUrl/v1/auth/gmsa/login", $content).Result
+                    Write-Log "Initial request completed with status: $($response.StatusCode)" -Level "INFO"
+                    
+                    # If we get 200, authentication worked directly
+                    if ($response.StatusCode -eq 200) {
+                        $responseContent = $response.Content.ReadAsStringAsync().Result
+                        $authData = $responseContent | ConvertFrom-Json
+                        if ($authData.auth -and $authData.auth.client_token) {
+                            Write-Log "SUCCESS: Direct authentication successful!" -Level "SUCCESS"
+                            $client.Dispose()
+                            return $authData.auth.client_token
+                        }
+                    }
+                    $response.Dispose()
                 } catch {
-                    $statusCode = $_.Exception.Response.StatusCode
+                    $statusCode = $_.Exception.InnerException.Response.StatusCode
                     Write-Log "Initial request returned: $statusCode" -Level "INFO"
                     
                     if ($statusCode -eq 401) {
                         Write-Log "SUCCESS: Got 401 challenge - checking for WWW-Authenticate header" -Level "SUCCESS"
                         
                         # Check for WWW-Authenticate: Negotiate header
-                        $response = $_.Exception.Response
-                        if ($response.Headers["WWW-Authenticate"] -like "*Negotiate*") {
-                            Write-Log "SUCCESS: Found WWW-Authenticate: Negotiate header" -Level "SUCCESS"
-                            
-                            # Step 2: Make authenticated request with Windows credentials
-                            Write-Log "Step 2: Making authenticated request with Windows credentials..." -Level "INFO"
-                            
-                            $authRequest = [System.Net.HttpWebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
-                            $authRequest.Method = "POST"
-                            $authRequest.UseDefaultCredentials = $true
-                            $authRequest.PreAuthenticate = $true
-                            $authRequest.ContentType = "application/json"
-                            $authRequest.Timeout = 10000
-                            $authRequest.UserAgent = "Vault-gMSA-Client/1.0"
-                            
-                            $authRequest.ContentLength = $bodyBytes.Length
-                            
-                            $authStream = $authRequest.GetRequestStream()
-                            $authStream.Write($bodyBytes, 0, $bodyBytes.Length)
-                            $authStream.Close()
-                            
-                            try {
-                                $authResponse = $authRequest.GetResponse()
-                                Write-Log "Authenticated request completed with status: $($authResponse.StatusCode)" -Level "INFO"
+                        $response = $_.Exception.InnerException.Response
+                        if ($response.Headers.Contains("WWW-Authenticate")) {
+                            $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
+                            if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "*Negotiate*") {
+                                Write-Log "SUCCESS: Found WWW-Authenticate: Negotiate header" -Level "SUCCESS"
+                                Write-Log "WWW-Authenticate: $($wwwAuthHeader[0])" -Level "INFO"
                                 
-                                # Check if we got a successful response
-                                if ($authResponse.StatusCode -eq 200) {
-                                    Write-Log "SUCCESS: Authentication successful!" -Level "SUCCESS"
-                                    $responseStream = $authResponse.GetResponseStream()
-                                    $reader = New-Object System.IO.StreamReader($responseStream)
-                                    $responseContent = $reader.ReadToEnd()
-                                    $reader.Close()
-                                    $responseStream.Close()
-                                    $authResponse.Close()
+                                # Step 2: Make authenticated request with Windows credentials
+                                Write-Log "Step 2: Making authenticated request with Windows credentials..." -Level "INFO"
+                                
+                                # Create new content for the authenticated request
+                                $authContent = New-Object System.Net.Http.StringContent($loginBody, [System.Text.Encoding]::UTF8, "application/json")
+                                
+                                try {
+                                    $authResponse = $client.PostAsync("$VaultUrl/v1/auth/gmsa/login", $authContent).Result
+                                    Write-Log "Authenticated request completed with status: $($authResponse.StatusCode)" -Level "INFO"
                                     
-                                    $authData = $responseContent | ConvertFrom-Json
-                                    if ($authData.auth -and $authData.auth.client_token) {
-                                        Write-Log "SUCCESS: Direct Vault token obtained!" -Level "SUCCESS"
-                                        return $authData.auth.client_token
+                                    # Check if we got a successful response
+                                    if ($authResponse.StatusCode -eq 200) {
+                                        Write-Log "SUCCESS: Authentication successful!" -Level "SUCCESS"
+                                        $responseContent = $authResponse.Content.ReadAsStringAsync().Result
+                                        $authData = $responseContent | ConvertFrom-Json
+                                        if ($authData.auth -and $authData.auth.client_token) {
+                                            Write-Log "SUCCESS: Direct Vault token obtained!" -Level "SUCCESS"
+                                            $client.Dispose()
+                                            return $authData.auth.client_token
+                                        }
+                                    }
+                                    $authResponse.Dispose()
+                                } catch {
+                                    $authStatusCode = $_.Exception.InnerException.Response.StatusCode
+                                    Write-Log "Authenticated request returned: $authStatusCode" -Level "INFO"
+                                    
+                                    # Check if Authorization header was added to the request
+                                    if ($client.DefaultRequestHeaders.Contains("Authorization")) {
+                                        $authHeader = $client.DefaultRequestHeaders.GetValues("Authorization")
+                                        if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                                            $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                                            Write-Log "SUCCESS: Real SPNEGO token captured from HttpClient!" -Level "SUCCESS"
+                                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                                            $client.Dispose()
+                                            return $spnegoToken
+                                        }
                                     }
                                 }
-                                $authResponse.Close()
-                            } catch {
-                                $authStatusCode = $_.Exception.Response.StatusCode
-                                Write-Log "Authenticated request returned: $authStatusCode" -Level "INFO"
-                                
-                                # Check if Authorization header was added
-                                if ($authRequest.Headers.Contains("Authorization")) {
-                                    $authHeader = $authRequest.Headers.GetValues("Authorization")
-                                    if ($authHeader -ne $null -and $authHeader.Count -gt 0 -and $authHeader[0] -like "Negotiate *") {
-                                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
-                                        Write-Log "SUCCESS: Real SPNEGO token captured!" -Level "SUCCESS"
-                                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-                                        return $spnegoToken
-                                    }
-                                }
+                            } else {
+                                Write-Log "WARNING: WWW-Authenticate header does not contain Negotiate" -Level "WARNING"
+                                Write-Log "WWW-Authenticate: $($wwwAuthHeader[0])" -Level "INFO"
                             }
                         } else {
-                            Write-Log "WARNING: No WWW-Authenticate: Negotiate header found" -Level "WARNING"
-                            Write-Log "WWW-Authenticate header: $($response.Headers['WWW-Authenticate'])" -Level "INFO"
+                            Write-Log "WARNING: No WWW-Authenticate header found" -Level "WARNING"
                         }
                     }
                 }
+                
+                $client.Dispose()
                 
             } catch {
                 Write-Log "SPNEGO negotiation flow failed: $($_.Exception.Message)" -Level "WARNING"
@@ -740,13 +784,13 @@ function Get-SPNEGOTokenPInvoke {
                 
                 # Generate a token based on the ticket (this is still a workaround)
                 # In a real implementation, you would extract the actual Kerberos ticket data
-                $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
                 $ticketHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ticketInfo + $timestamp))
                 $ticketHashString = [System.BitConverter]::ToString($ticketHash) -replace '-', ''
                 
                 $spnegoData = "KERBEROS_TICKET_BASED_TOKEN_$($ticketHashString.Substring(0,16))_$timestamp"
-                $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($spnegoData))
-                
+            $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($spnegoData))
+            
                 Write-Log "Kerberos-based token generated" -Level "INFO"
                 Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
                 
@@ -1520,10 +1564,10 @@ function Start-VaultClientApplication {
             # This is a SPNEGO token, need to authenticate with Vault
             Write-Log "Step 2: Authenticating to Vault with SPNEGO token..." -Level "INFO"
             $vaultToken = Invoke-VaultAuthentication -VaultUrl $VaultUrl -Role $VaultRole -SPNEGOToken $authToken
-            
-            if (-not $vaultToken) {
-                Write-Log "Failed to authenticate to Vault" -Level "ERROR"
-                return $false
+        
+        if (-not $vaultToken) {
+            Write-Log "Failed to authenticate to Vault" -Level "ERROR"
+            return $false
             }
         }
         
