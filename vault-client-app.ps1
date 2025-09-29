@@ -581,6 +581,11 @@ function Get-SPNEGOToken {
         
         # Method 2: HTTP-based approach (fallback)
         Write-Log "Using HTTP-based SPNEGO token generation..."
+        
+        # Define SSPI structures and functions
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
 
 public class SSPIHelper
 {
