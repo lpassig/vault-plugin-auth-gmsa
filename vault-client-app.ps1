@@ -61,6 +61,107 @@ Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 
 # =============================================================================
+# Kerberos Ticket Request Functions
+# =============================================================================
+
+function Request-KerberosTicket {
+    param(
+        [string]$SPN,
+        [string]$VaultUrl
+    )
+    
+    try {
+        Write-Log "Requesting Kerberos ticket for SPN: $SPN" -Level "INFO"
+        
+        # Method 1: Use kinit to request ticket
+        try {
+            Write-Log "Attempting kinit for SPN: $SPN" -Level "INFO"
+            $kinitOutput = kinit -S $SPN 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "✅ kinit successful for SPN: $SPN" -Level "SUCCESS"
+                return $true
+            } else {
+                Write-Log "❌ kinit failed: $kinitOutput" -Level "WARNING"
+            }
+        } catch {
+            Write-Log "❌ kinit command failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Method 2: Use HTTP request to trigger Kerberos authentication
+        try {
+            Write-Log "Attempting HTTP-based ticket request..." -Level "INFO"
+            
+            # Create HTTP request to trigger Kerberos authentication
+            $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+            $request.Method = "GET"
+            $request.UseDefaultCredentials = $true
+            $request.PreAuthenticate = $true
+            
+            try {
+                $response = $request.GetResponse()
+                $response.Close()
+                Write-Log "✅ HTTP request completed successfully" -Level "SUCCESS"
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode
+                Write-Log "HTTP request returned: $statusCode" -Level "INFO"
+                
+                if ($statusCode -eq 401) {
+                    Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+                }
+            }
+        } catch {
+            Write-Log "❌ HTTP-based ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Method 3: Use .NET HttpClient with Windows authentication
+        try {
+            Write-Log "Attempting .NET HttpClient ticket request..." -Level "INFO"
+            
+            Add-Type -AssemblyName System.Net.Http
+            
+            $handler = New-Object System.Net.Http.HttpClientHandler
+            $handler.UseDefaultCredentials = $true
+            $handler.PreAuthenticate = $true
+            
+            $client = New-Object System.Net.Http.HttpClient($handler)
+            $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+            
+            $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
+            $response = $client.SendAsync($request).Result
+            
+            Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
+            
+            if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+                Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+            }
+            
+            $client.Dispose()
+        } catch {
+            Write-Log "❌ HttpClient ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Check if ticket was successfully requested
+        try {
+            $klistOutputAfter = klist 2>&1
+            if ($LASTEXITCODE -eq 0 -and $klistOutputAfter -match $SPN) {
+                Write-Log "✅ SUCCESS: Ticket found for SPN: $SPN" -Level "SUCCESS"
+                return $true
+            } else {
+                Write-Log "❌ FAILURE: No ticket found for SPN: $SPN after request attempts" -Level "ERROR"
+                return $false
+            }
+        } catch {
+            Write-Log "❌ Could not verify ticket after request attempts" -Level "ERROR"
+            return $false
+        }
+        
+    } catch {
+        Write-Log "❌ Ticket request failed: $($_.Exception.Message)" -Level "ERROR"
+        return $false
+    }
+}
+
+# =============================================================================
 # SPNEGO Token Generation Functions
 # =============================================================================
 
@@ -1005,7 +1106,20 @@ function Start-VaultClientApplication {
                 Write-Log "⚠️  WARNING: No Kerberos ticket found for SPN: $SPN" -Level "WARNING"
                 Write-Log "   Available tickets:" -Level "WARNING"
                 Write-Log "   $($klistOutput -join '; ')" -Level "WARNING"
-                Write-Log "   SOLUTION: Request ticket for SPN: $SPN" -Level "WARNING"
+                Write-Log "   Attempting to request ticket for SPN: $SPN" -Level "INFO"
+                
+                # Attempt to request the missing ticket
+                $ticketRequested = Request-KerberosTicket -SPN $SPN -VaultUrl $VaultUrl
+                if ($ticketRequested) {
+                    Write-Log "✅ Successfully requested Kerberos ticket for SPN: $SPN" -Level "SUCCESS"
+                } else {
+                    Write-Log "❌ CRITICAL: Failed to request Kerberos ticket for SPN: $SPN" -Level "ERROR"
+                    Write-Log "   Manual steps required:" -Level "ERROR"
+                    Write-Log "   1. Ensure SPN is registered in Active Directory" -Level "ERROR"
+                    Write-Log "   2. Verify gMSA has proper permissions" -Level "ERROR"
+                    Write-Log "   3. Check network connectivity to Domain Controller" -Level "ERROR"
+                    return $false
+                }
             } else {
                 Write-Log "✅ Kerberos ticket found for SPN: $SPN" -Level "SUCCESS"
             }
