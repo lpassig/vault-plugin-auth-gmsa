@@ -174,7 +174,17 @@ function Copy-ApplicationScript {
         
         # Always overwrite with current directory script
         Write-Host "UPDATING: Overwriting scheduled task script with current directory version..." -ForegroundColor Yellow
-        Copy-Item $sourceScript $targetScript -Force
+        
+        try {
+            Copy-Item $sourceScript $targetScript -Force -ErrorAction Stop
+            Write-Host "SUCCESS: Copy operation completed" -ForegroundColor Green
+        } catch {
+            Write-Host "ERROR: Copy operation failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "Source: $sourceScript" -ForegroundColor Yellow
+            Write-Host "Target: $targetScript" -ForegroundColor Yellow
+            Write-Host "Current directory: $(Get-Location)" -ForegroundColor Yellow
+            return $null
+        }
         
         # Verify the copy worked
         if (Test-Path $targetScript) {
@@ -183,11 +193,17 @@ function Copy-ApplicationScript {
             Write-Host "SUCCESS: Application script updated: $targetScript" -ForegroundColor Green
             Write-Host "SUCCESS: Copied script version: $copiedVersion" -ForegroundColor Green
             
+            # Verify file size
+            $fileSize = (Get-Item $targetScript).Length
+            Write-Host "SUCCESS: File size: $fileSize bytes" -ForegroundColor Green
+            
             # Note: Scheduled task will be created/updated in the main setup process
             
             return $targetScript
         } else {
             Write-Host "ERROR: Failed to copy script to: $targetScript" -ForegroundColor Red
+            Write-Host "Source script exists: $(Test-Path $sourceScript)" -ForegroundColor Yellow
+            Write-Host "Target directory exists: $(Test-Path (Split-Path $targetScript))" -ForegroundColor Yellow
             return $null
         }
     } else {
@@ -551,8 +567,12 @@ function Start-Setup {
     
     # Step 3: Copy application script
     $scriptPath = Copy-ApplicationScript -ScriptsDir $dirs.ScriptsDir
+    Write-Host "Script path result: $scriptPath" -ForegroundColor Cyan
+    Write-Host "Script path type: $($scriptPath.GetType().Name)" -ForegroundColor Cyan
+    
     if (-not $scriptPath) {
         Write-Host "ERROR: Failed to copy application script" -ForegroundColor Red
+        Write-Host "Copy-ApplicationScript returned: $scriptPath" -ForegroundColor Red
         exit 1
     }
     
