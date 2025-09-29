@@ -230,21 +230,34 @@ function Get-SPNEGOTokenPInvoke {
             Write-Log "Ticket details: $($klistOutput -join '; ')" -Level "INFO"
         } else {
             Write-Log "No Kerberos ticket found for $TargetSPN" -Level "WARNING"
-            Write-Log "Attempting to request Kerberos ticket..." -Level "INFO"
             
-            # Try to request the ticket
-            $ticketObtained = Request-KerberosTicket -TargetSPN $TargetSPN
-            if (-not $ticketObtained) {
-                Write-Log "Failed to obtain Kerberos ticket for $TargetSPN" -Level "WARNING"
+            # Check if we have a TGT (Ticket Granting Ticket)
+            if ($klistOutput -match "krbtgt/LOCAL.LAB") {
+                Write-Log "TGT (Ticket Granting Ticket) found - attempting to request service ticket" -Level "INFO"
                 
-                # Check if we have a TGT (Ticket Granting Ticket) - this might be sufficient
-                if ($klistOutput -match "krbtgt/LOCAL.LAB") {
-                    Write-Log "TGT (Ticket Granting Ticket) found - proceeding with SPNEGO generation" -Level "INFO"
-                    Write-Log "Windows SSPI may be able to generate service ticket on-demand" -Level "INFO"
-                } else {
-                    Write-Log "No TGT found - cannot proceed with SPNEGO generation" -Level "ERROR"
-                    return $null
+                # Try to request the service ticket using klist
+                Write-Log "Requesting service ticket for $TargetSPN using klist..." -Level "INFO"
+                try {
+                    $serviceTicketResult = klist -target:$TargetSPN 2>&1
+                    Write-Log "Service ticket request result: $serviceTicketResult" -Level "INFO"
+                    
+                    # Check if service ticket was obtained
+                    Start-Sleep -Seconds 2
+                    $updatedKlistOutput = klist 2>&1
+                    if ($updatedKlistOutput -match $TargetSPN) {
+                        Write-Log "SUCCESS: Service ticket obtained for $TargetSPN" -Level "SUCCESS"
+                    } else {
+                        Write-Log "WARNING: Service ticket request may have failed" -Level "WARNING"
+                        Write-Log "Proceeding with TGT - Windows SSPI may generate service ticket on-demand" -Level "INFO"
+                    }
+                } catch {
+                    Write-Log "Service ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+                    Write-Log "Proceeding with TGT - Windows SSPI may generate service ticket on-demand" -Level "INFO"
                 }
+            } else {
+                Write-Log "No TGT found - cannot proceed with SPNEGO generation" -Level "ERROR"
+                Write-Log "gMSA account must have valid Kerberos tickets" -Level "ERROR"
+                return $null
             }
         }
         
@@ -301,6 +314,22 @@ function Get-SPNEGOTokenPInvoke {
             
             if ($result -ne [SSPI]::SEC_E_OK -and $result -ne [SSPI]::SEC_I_CONTINUE_NEEDED) {
                 Write-Log "ERROR: InitializeSecurityContext failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
+                
+                # Decode common error codes
+                switch ($result) {
+                    0x80090308 { Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR" }
+                    0x8009030E { Write-Log "ERROR: SEC_E_NO_CREDENTIALS - No credentials available" -Level "ERROR" }
+                    0x8009030F { Write-Log "ERROR: SEC_E_NO_AUTHENTICATING_AUTHORITY - Cannot contact domain controller" -Level "ERROR" }
+                    0x80090311 { Write-Log "ERROR: SEC_E_WRONG_PRINCIPAL - SPN does not match server" -Level "ERROR" }
+                    default { Write-Log "ERROR: Unknown SSPI error code: 0x$($result.ToString('X8'))" -Level "ERROR" }
+                }
+                
+                Write-Log "Troubleshooting steps:" -Level "ERROR"
+                Write-Log "1. Verify SPN '$TargetSPN' is registered in Active Directory" -Level "ERROR"
+                Write-Log "2. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
+                Write-Log "3. Check domain controller connectivity" -Level "ERROR"
+                Write-Log "4. Verify gMSA account is properly configured" -Level "ERROR"
+                
                 [SSPI]::FreeCredentialsHandle([ref]$credHandle)
                 return $null
             }
@@ -547,6 +576,21 @@ function Authenticate-ToVault {
         
         if (-not $spnegoToken) {
             Write-Log "ERROR: Failed to generate SPNEGO token" -Level "ERROR"
+            Write-Log "Cannot proceed with authentication without a valid SPNEGO token" -Level "ERROR"
+            return $null
+        }
+        
+        # Validate token format
+        if ($spnegoToken -is [array] -or $spnegoToken -is [System.Collections.ArrayList]) {
+            Write-Log "ERROR: Invalid token format - token is an array instead of string" -Level "ERROR"
+            Write-Log "Token value: $($spnegoToken | ConvertTo-Json)" -Level "ERROR"
+            return $null
+        }
+        
+        if ($spnegoToken.Length -lt 10) {
+            Write-Log "ERROR: Token too short - likely invalid" -Level "ERROR"
+            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "ERROR"
+            Write-Log "Token value: $spnegoToken" -Level "ERROR"
             return $null
         }
         
