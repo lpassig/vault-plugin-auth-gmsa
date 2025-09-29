@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.4 (IP SPN Support)" -Level "INFO"
+Write-Log "Script version: 3.5 (Fixed klist syntax)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -289,7 +289,7 @@ function Get-SPNEGOTokenPInvoke {
                 # Try to request the service ticket using klist
                 Write-Log "Requesting service ticket for $TargetSPN using klist..." -Level "INFO"
                 try {
-                    $serviceTicketResult = klist -target:$TargetSPN 2>&1
+                    $serviceTicketResult = klist get $TargetSPN 2>&1
                     Write-Log "Service ticket request result: $serviceTicketResult" -Level "INFO"
                     
                     # Check if service ticket was obtained
@@ -490,7 +490,7 @@ function Request-KerberosTicket {
             Write-Log "Method 2A: Requesting service ticket using klist for SPN: $TargetSPN" -Level "INFO"
             try {
                 # Use klist to request a service ticket for the specific SPN
-                $klistResult = klist -target:$TargetSPN 2>&1
+                $klistResult = klist get $TargetSPN 2>&1
                 Write-Log "klist service ticket request result: $klistResult" -Level "INFO"
                 
                 # Check if the request was successful
@@ -744,7 +744,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.3 (Win32 SSPI Integration)" -Level "INFO"
+        Write-Log "Script version: 3.5 (Fixed klist syntax)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
