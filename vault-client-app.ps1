@@ -11,7 +11,7 @@
 param(
     [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
-    [string]$SPN = "HTTP/vault.local.lab",
+    [string]$SPN = "HTTP/vault.example.com",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
     [string]$ConfigOutputDir = "C:\vault-client\config",
     [switch]$CreateScheduledTask = $false,
