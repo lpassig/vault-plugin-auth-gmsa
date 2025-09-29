@@ -183,9 +183,7 @@ function Copy-ApplicationScript {
             Write-Host "SUCCESS: Application script updated: $targetScript" -ForegroundColor Green
             Write-Host "SUCCESS: Copied script version: $copiedVersion" -ForegroundColor Green
             
-            # Update scheduled task to use the new script
-            Write-Host "Updating scheduled task to use new script..." -ForegroundColor Yellow
-            Update-ScheduledTaskScript -TaskName $TaskName -ScriptPath $targetScript
+            # Note: Scheduled task will be created/updated in the main setup process
             
             return $targetScript
         } else {
@@ -295,8 +293,14 @@ function New-VaultClientScheduledTask {
         $secretPathsParam = $SecretPaths -join '","'
         
         # Verify the script path exists before creating the task
+        Write-Host "Verifying script path: $ScriptPath" -ForegroundColor Cyan
+        Write-Host "Script path type: $($ScriptPath.GetType().Name)" -ForegroundColor Cyan
+        
         if (-not (Test-Path $ScriptPath)) {
             Write-Host "ERROR: Script path does not exist: $ScriptPath" -ForegroundColor Red
+            Write-Host "Current directory: $(Get-Location)" -ForegroundColor Yellow
+            Write-Host "Available files:" -ForegroundColor Yellow
+            Get-ChildItem -Path (Split-Path $ScriptPath) -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor Gray }
             return $false
         }
         
