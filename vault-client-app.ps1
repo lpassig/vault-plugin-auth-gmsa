@@ -74,18 +74,33 @@ function Request-KerberosTicket {
     try {
         Write-Log "Requesting Kerberos ticket for SPN: $SPN" -Level "INFO"
         
-        # Method 1: Use kinit to request ticket
+        # Method 1: Use Windows-native Kerberos ticket request
         try {
-            Write-Log "Attempting kinit for SPN: $SPN" -Level "INFO"
-            $kinitOutput = kinit -S $SPN 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Log "✅ kinit successful for SPN: $SPN" -Level "SUCCESS"
-                return $true
-            } else {
-                Write-Log "❌ kinit failed: $kinitOutput" -Level "WARNING"
+            Write-Log "Attempting Windows-native Kerberos ticket request for SPN: $SPN" -Level "INFO"
+            
+            # Use PowerShell to request ticket via Windows SSPI
+            Add-Type -AssemblyName System.Net.Http
+            
+            $handler = New-Object System.Net.Http.HttpClientHandler
+            $handler.UseDefaultCredentials = $true
+            $handler.PreAuthenticate = $true
+            
+            $client = New-Object System.Net.Http.HttpClient($handler)
+            $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+            
+            # Make a request to trigger Kerberos ticket request
+            $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
+            $response = $client.SendAsync($request).Result
+            
+            Write-Log "Windows SSPI request completed with status: $($response.StatusCode)" -Level "INFO"
+            
+            if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
+                Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
             }
+            
+            $client.Dispose()
         } catch {
-            Write-Log "❌ kinit command failed: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "❌ Windows-native ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
         # Method 2: Use HTTP request to trigger Kerberos authentication
@@ -97,6 +112,7 @@ function Request-KerberosTicket {
             $request.Method = "GET"
             $request.UseDefaultCredentials = $true
             $request.PreAuthenticate = $true
+            $request.Timeout = 10000  # 10 second timeout
             
             try {
                 $response = $request.GetResponse()
@@ -108,6 +124,8 @@ function Request-KerberosTicket {
                 
                 if ($statusCode -eq 401) {
                     Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+                } elseif ($statusCode -eq 405) {
+                    Write-Log "✅ 405 Method Not Allowed - Expected for GET request" -Level "SUCCESS"
                 }
             }
         } catch {
@@ -126,6 +144,7 @@ function Request-KerberosTicket {
             
             $client = New-Object System.Net.Http.HttpClient($handler)
             $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+            $client.Timeout = [TimeSpan]::FromSeconds(10)
             
             $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
             $response = $client.SendAsync($request).Result
@@ -134,6 +153,8 @@ function Request-KerberosTicket {
             
             if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
                 Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+            } elseif ($response.StatusCode -eq [System.Net.HttpStatusCode]::MethodNotAllowed) {
+                Write-Log "✅ 405 Method Not Allowed - Expected for GET request" -Level "SUCCESS"
             }
             
             $client.Dispose()
