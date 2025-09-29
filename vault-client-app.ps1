@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.10 (PowerShell 5.1 Compatible Alternative Method)" -Level "INFO"
+Write-Log "Script version: 3.11 (Enhanced Authorization Header Debugging)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -543,21 +543,41 @@ function Get-SPNEGOTokenPInvoke {
                         try {
                             $response = $request.GetResponse()
                             Write-Log "Alternative WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
+                            
+                            # Check response headers for WWW-Authenticate
+                            if ($response.Headers -and $response.Headers["WWW-Authenticate"]) {
+                                Write-Log "Response WWW-Authenticate header: $($response.Headers['WWW-Authenticate'])" -Level "INFO"
+                            }
+                            
                             $response.Close()
                         } catch {
                             $statusCode = $_.Exception.Response.StatusCode
                             Write-Log "Alternative WebRequest returned: $statusCode" -Level "INFO"
                             
+                            # Check response headers for WWW-Authenticate
+                            if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
+                                Write-Log "Error Response WWW-Authenticate header: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "INFO"
+                            }
+                            
                             # Check if the request contains Authorization header
-                            if ($request.Headers -and $request.Headers["Authorization"]) {
+                            Write-Log "Checking request headers for Authorization..." -Level "INFO"
+                            if ($request.Headers) {
+                                Write-Log "Request headers count: $($request.Headers.Count)" -Level "INFO"
                                 $authHeader = $request.Headers["Authorization"]
-                                if ($authHeader -like "Negotiate *") {
-                                    $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                    Write-Log "SUCCESS: Captured SPNEGO token from WebRequest method!" -Level "SUCCESS"
-                                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                    [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                    return $spnegoToken
+                                if ($authHeader) {
+                                    Write-Log "Found Authorization header: $authHeader" -Level "INFO"
+                                    if ($authHeader -like "Negotiate *") {
+                                        $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                        Write-Log "SUCCESS: Captured SPNEGO token from WebRequest method!" -Level "SUCCESS"
+                                        Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                        [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                        return $spnegoToken
+                                    }
+                                } else {
+                                    Write-Log "No Authorization header found in request" -Level "WARNING"
                                 }
+                            } else {
+                                Write-Log "No request headers found" -Level "WARNING"
                             }
                         }
                     } catch {
@@ -582,16 +602,30 @@ function Get-SPNEGOTokenPInvoke {
                             $statusCode = $_.Exception.Response.StatusCode
                             Write-Log "Alternative WebClient returned: $statusCode" -Level "INFO"
                             
+                            # Check response headers for WWW-Authenticate
+                            if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
+                                Write-Log "Error Response WWW-Authenticate header: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "INFO"
+                            }
+                            
                             # Check if the request contains Authorization header
-                            if ($webClient.Headers -and $webClient.Headers["Authorization"]) {
+                            Write-Log "Checking WebClient headers for Authorization..." -Level "INFO"
+                            if ($webClient.Headers) {
+                                Write-Log "WebClient headers count: $($webClient.Headers.Count)" -Level "INFO"
                                 $authHeader = $webClient.Headers["Authorization"]
-                                if ($authHeader -like "Negotiate *") {
-                                    $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                    Write-Log "SUCCESS: Captured SPNEGO token from WebClient method!" -Level "SUCCESS"
-                                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                    [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                    return $spnegoToken
+                                if ($authHeader) {
+                                    Write-Log "Found Authorization header: $authHeader" -Level "INFO"
+                                    if ($authHeader -like "Negotiate *") {
+                                        $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                        Write-Log "SUCCESS: Captured SPNEGO token from WebClient method!" -Level "SUCCESS"
+                                        Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                        [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                        return $spnegoToken
+                                    }
+                                } else {
+                                    Write-Log "No Authorization header found in WebClient" -Level "WARNING"
                                 }
+                            } else {
+                                Write-Log "No WebClient headers found" -Level "WARNING"
                             }
                         }
                         
@@ -1001,7 +1035,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.10 (PowerShell 5.1 Compatible Alternative Method)" -Level "INFO"
+        Write-Log "Script version: 3.11 (Enhanced Authorization Header Debugging)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
