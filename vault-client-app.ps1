@@ -24,7 +24,7 @@ param(
 
 # Create output directory
 try {
-    if (-not (Test-Path $ConfigOutputDir)) {
+if (-not (Test-Path $ConfigOutputDir)) {
         New-Item -ItemType Directory -Path $ConfigOutputDir -Force | Out-Null
         Write-Host "Created config directory: $ConfigOutputDir" -ForegroundColor Green
     } else {
@@ -48,7 +48,7 @@ function Write-Log {
     
     # Also write to log file
     try {
-        $logFile = "$ConfigOutputDir\vault-client.log"
+    $logFile = "$ConfigOutputDir\vault-client.log"
         Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
     } catch {
         Write-Host "Failed to write to log file: $($_.Exception.Message)" -ForegroundColor Red
@@ -243,6 +243,19 @@ function Get-SPNEGOTokenPInvoke {
         
         $client = New-Object System.Net.Http.HttpClient($handler)
         $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+        
+        # Force SPNEGO negotiation by making a request that should return 401
+        # If Vault returns 200 OK, it means gMSA auth is not properly configured
+        Write-Log "Testing Vault gMSA authentication configuration..."
+        $testRequest = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
+        $testResponse = $client.SendAsync($testRequest).Result
+        Write-Log "Vault gMSA endpoint response: $($testResponse.StatusCode)"
+        
+        if ($testResponse.StatusCode -eq [System.Net.HttpStatusCode]::OK) {
+            Write-Log "WARNING: Vault gMSA endpoint returns 200 OK instead of 401 Unauthorized" -Level "WARNING"
+            Write-Log "This indicates gMSA authentication is not properly configured on the Vault server" -Level "WARNING"
+            Write-Log "Expected behavior: 401 Unauthorized to trigger SPNEGO negotiation" -Level "WARNING"
+        }
         
         # Try different SPN formats
         $spnFormats = @(
@@ -520,7 +533,7 @@ function Get-SPNEGOToken {
                 Write-Log "Kerberos-based SPNEGO token generated successfully" -Level "INFO"
                 Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
                 
-                return $spnegoToken
+            return $spnegoToken
             } else {
                 Write-Log "No Kerberos ticket found" -Level "WARNING"
             }
@@ -613,10 +626,10 @@ function Invoke-VaultAuthentication {
             Write-Log "HTTP Status Code: $statusCode" -Level "ERROR"
             
             try {
-                $errorStream = $_.Exception.Response.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($errorStream)
-                $errorBody = $reader.ReadToEnd()
-                Write-Log "Error details: $errorBody" -Level "ERROR"
+            $errorStream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($errorStream)
+            $errorBody = $reader.ReadToEnd()
+            Write-Log "Error details: $errorBody" -Level "ERROR"
                 
                 # Try to parse as JSON to get more details
                 try {
