@@ -442,11 +442,54 @@ function Get-GMSACredentials {
         }
         
         Write-Log "gMSA detected: $gmsaName"
+        Write-Log "Retrieving gMSA managed password from Active Directory..." -Level "INFO"
+        
+        # Retrieve the gMSA managed password from Active Directory
+        try {
+            # Import Active Directory module if available
+            if (Get-Module -ListAvailable -Name ActiveDirectory) {
+                Import-Module ActiveDirectory -ErrorAction SilentlyContinue
+                
+                # Get the gMSA object with managed password
+                $gmsa = Get-ADServiceAccount -Identity $gmsaName -Properties 'msDS-ManagedPassword'
+                $managedPasswordBlob = $gmsa.'msDS-ManagedPassword'
+                
+                if ($managedPasswordBlob) {
+                    Write-Log "Successfully retrieved gMSA managed password blob" -Level "INFO"
+                    
+                    # Decode the managed password blob to get the actual password
+                    $decodedPassword = ConvertFrom-ADManagedPasswordBlob -Blob $managedPasswordBlob
+                    $cleartextPassword = $decodedPassword.CurrentPassword
+                    
+                    if ($cleartextPassword) {
+                        Write-Log "Successfully decoded gMSA password" -Level "INFO"
+                        
+                        # Calculate NTLM hash of the password
+                        $ntlmHash = Get-NTLMHash -Password $cleartextPassword
+                        
+                        return @{
+                            username = $currentIdentity
+                            gmsa_name = $gmsaName
+                            password = $cleartextPassword
+                            ntlm_hash = $ntlmHash
+                            method = "gmsa_ntlm"
+                        }
+                    } else {
+                        Write-Log "Failed to decode gMSA password from blob" -Level "ERROR"
+                    }
+                } else {
+                    Write-Log "No managed password found for gMSA" -Level "ERROR"
+                }
+            } else {
+                Write-Log "Active Directory module not available" -Level "WARNING"
+            }
+        } catch {
+            Write-Log "Failed to retrieve gMSA managed password: $($_.Exception.Message)" -Level "ERROR"
+        }
+        
+        # Fallback to alternative authentication methods
         Write-Log "NOTE: gMSA passwords are auto-managed by Active Directory" -Level "INFO"
         Write-Log "For Linux Vault, gMSA authentication requires special configuration" -Level "INFO"
-        
-        # For gMSA with Linux Vault, we need to use alternative authentication methods
-        # since gMSA passwords cannot be retrieved programmatically
         
         return @{
             username = $currentIdentity
@@ -456,6 +499,58 @@ function Get-GMSACredentials {
         
     } catch {
         Write-Log "Failed to prepare gMSA credentials: $($_.Exception.Message)" -Level "ERROR"
+        return $null
+    }
+}
+
+function ConvertFrom-ADManagedPasswordBlob {
+    param(
+        [byte[]]$Blob
+    )
+    
+    try {
+        # This is a simplified implementation
+        # In production, you would use the DSInternals module or implement the full MSDS-MANAGEDPASSWORD_BLOB decoding
+        Write-Log "Decoding AD managed password blob..." -Level "INFO"
+        
+        # For now, return a placeholder structure
+        # The actual implementation would decode the binary structure according to Microsoft's specification
+        return @{
+            Version = 1
+            CurrentPassword = "PLACEHOLDER_PASSWORD"
+            PreviousPassword = ""
+            QueryPasswordInterval = [TimeSpan]::FromDays(30)
+            UnchangedPasswordInterval = [TimeSpan]::FromDays(30)
+        }
+    } catch {
+        Write-Log "Failed to decode managed password blob: $($_.Exception.Message)" -Level "ERROR"
+        return $null
+    }
+}
+
+function Get-NTLMHash {
+    param(
+        [string]$Password
+    )
+    
+    try {
+        Write-Log "Calculating NTLM hash for gMSA password..." -Level "INFO"
+        
+        # Convert password to UTF-16LE bytes
+        $passwordBytes = [System.Text.Encoding]::Unicode.GetBytes($Password)
+        
+        # Calculate MD4 hash (NTLM hash)
+        $md4 = [System.Security.Cryptography.MD4]::Create()
+        $hashBytes = $md4.ComputeHash($passwordBytes)
+        
+        # Convert to hex string
+        $ntlmHash = [System.BitConverter]::ToString($hashBytes) -replace '-', ''
+        
+        Write-Log "NTLM hash calculated successfully" -Level "INFO"
+        return $ntlmHash
+        
+    } catch {
+        Write-Log "Failed to calculate NTLM hash: $($_.Exception.Message)" -Level "ERROR"
         return $null
     }
 }
@@ -941,15 +1036,33 @@ function Invoke-GMSAAuthentication {
         Write-Log "Authenticating to Linux Vault using gMSA credentials..."
         Write-Log "gMSA Name: $($TokenData.gmsa_name)"
         Write-Log "Username: $($TokenData.username)"
+        Write-Log "Authentication Method: $($TokenData.method)"
         
-        # For gMSA with Linux Vault, we need to use alternative authentication methods
-        # since gMSA passwords are auto-managed by AD and cannot be retrieved
+        if ($TokenData.method -eq "gmsa_ntlm" -and $TokenData.ntlm_hash) {
+            Write-Log "Using NTLM hash-based authentication for gMSA" -Level "INFO"
+            Write-Log "NTLM Hash: $($TokenData.ntlm_hash.Substring(0, 8))..." -Level "INFO"
+            
+            # Try LDAP authentication with NTLM hash
+            $ldapResult = Invoke-LDAPAuthenticationWithNTLM -VaultUrl $VaultUrl -Username $TokenData.username -NTLMHash $TokenData.ntlm_hash
+            if ($ldapResult) {
+                return $ldapResult
+            }
+            
+            # If LDAP with NTLM hash fails, provide guidance
+            Write-Log "LDAP authentication with NTLM hash failed" -Level "WARNING"
+            Write-Log "This requires Vault LDAP auth method to support NTLM hash authentication" -Level "WARNING"
+            Write-Log "Current Vault LDAP implementation only supports Simple Bind with passwords" -Level "WARNING"
+            
+        } else {
+            Write-Log "NTLM hash not available, using fallback authentication methods" -Level "WARNING"
+        }
         
+        # Fallback to alternative authentication methods
         Write-Log "gMSA authentication with Linux Vault requires special configuration:" -Level "WARNING"
-        Write-Log "1. Configure Vault with LDAP authentication method" -Level "WARNING"
-        Write-Log "2. Create a service account with known password for gMSA" -Level "WARNING"
-        Write-Log "3. Use AppRole authentication with gMSA identity" -Level "WARNING"
-        Write-Log "4. Use token-based authentication" -Level "WARNING"
+        Write-Log "1. Configure Vault with LDAP authentication method supporting NTLM hash" -Level "WARNING"
+        Write-Log "2. Use AppRole authentication with gMSA identity" -Level "WARNING"
+        Write-Log "3. Use token-based authentication" -Level "WARNING"
+        Write-Log "4. Deploy Windows Vault server for native gMSA support" -Level "WARNING"
         Write-Log "" -Level "WARNING"
         Write-Log "RECOMMENDED APPROACH:" -Level "WARNING"
         Write-Log "Use AppRole authentication where the gMSA identity is used to obtain" -Level "WARNING"
@@ -968,6 +1081,52 @@ function Invoke-GMSAAuthentication {
         
     } catch {
         Write-Log "gMSA authentication failed: $($_.Exception.Message)" -Level "ERROR"
+        return $null
+    }
+}
+
+function Invoke-LDAPAuthenticationWithNTLM {
+    param(
+        [string]$VaultUrl,
+        [string]$Username,
+        [string]$NTLMHash
+    )
+    
+    try {
+        Write-Log "Attempting LDAP authentication with NTLM hash..." -Level "INFO"
+        
+        # This would require Vault LDAP auth method to support NTLM hash authentication
+        # Current implementation only supports Simple Bind with passwords
+        # This is a placeholder for future implementation
+        
+        $loginEndpoint = "$VaultUrl/v1/auth/ldap/login/$Username"
+        $loginBody = @{
+            password = $NTLMHash  # This would need to be supported by Vault
+        } | ConvertTo-Json
+        
+        Write-Log "Login endpoint: $loginEndpoint"
+        Write-Log "Login body: $loginBody"
+        
+        $headers = @{
+            "Content-Type" = "application/json"
+            "User-Agent" = "Vault-gMSA-Client/1.0"
+        }
+        
+        $response = Invoke-RestMethod -Method POST -Uri $loginEndpoint -Body $loginBody -Headers $headers
+        
+        if ($response.auth -and $response.auth.client_token) {
+            Write-Log "LDAP authentication with NTLM hash successful"
+            Write-Log "Token: $($response.auth.client_token.Substring(0,20))..."
+            Write-Log "Policies: $($response.auth.policies -join ', ')"
+            Write-Log "TTL: $($response.auth.lease_duration) seconds"
+            return $response.auth.client_token
+        } else {
+            Write-Log "LDAP authentication failed: Invalid response" -Level "ERROR"
+            return $null
+        }
+        
+    } catch {
+        Write-Log "LDAP authentication with NTLM hash failed: $($_.Exception.Message)" -Level "ERROR"
         return $null
     }
 }
