@@ -282,8 +282,18 @@ function Request-KerberosTicket {
     try {
         Write-Log "Requesting Kerberos ticket for SPN: $TargetSPN" -Level "INFO"
         
+        # Set overall timeout for the entire function
+        $overallTimeout = 30  # seconds
+        $startTime = Get-Date
+        
         # Method 1: Use klist to request ticket directly
         try {
+            # Check timeout
+            if ((Get-Date) - $startTime -gt [TimeSpan]::FromSeconds($overallTimeout)) {
+                Write-Log "Timeout reached, skipping remaining methods" -Level "WARNING"
+                return $false
+            }
+            
             Write-Log "Attempting direct klist ticket request..." -Level "INFO"
             
             # Try to request ticket using klist (if available)
@@ -300,10 +310,25 @@ function Request-KerberosTicket {
         
         # Method 2: Use Windows SSPI to request ticket via HTTP request
         try {
+            # Check timeout
+            if ((Get-Date) - $startTime -gt [TimeSpan]::FromSeconds($overallTimeout)) {
+                Write-Log "Timeout reached, skipping remaining methods" -Level "WARNING"
+                return $false
+            }
+            
             Write-Log "Attempting Windows SSPI ticket request..." -Level "INFO"
             
+            # Convert SPN to proper hostname for HTTP request
+            $hostname = $TargetSPN
+            if ($TargetSPN -like "HTTP/*") {
+                $hostname = $TargetSPN -replace "^HTTP/", ""
+                $hostname = $hostname -replace ":\d+$", ""  # Remove port if present
+            }
+            
+            Write-Log "Using hostname for SSPI request: $hostname" -Level "INFO"
+            
             # Create a request to trigger Kerberos ticket request
-            $request = [System.Net.WebRequest]::Create("https://$TargetSPN")
+            $request = [System.Net.WebRequest]::Create("https://$hostname")
             $request.Method = "GET"
             $request.UseDefaultCredentials = $true
             $request.PreAuthenticate = $true
@@ -328,7 +353,22 @@ function Request-KerberosTicket {
         
         # Method 3: Use HttpClient with Windows authentication
         try {
+            # Check timeout
+            if ((Get-Date) - $startTime -gt [TimeSpan]::FromSeconds($overallTimeout)) {
+                Write-Log "Timeout reached, skipping remaining methods" -Level "WARNING"
+                return $false
+            }
+            
             Write-Log "Attempting HttpClient ticket request..." -Level "INFO"
+            
+            # Convert SPN to proper hostname for HTTP request
+            $hostname = $TargetSPN
+            if ($TargetSPN -like "HTTP/*") {
+                $hostname = $TargetSPN -replace "^HTTP/", ""
+                $hostname = $hostname -replace ":\d+$", ""  # Remove port if present
+            }
+            
+            Write-Log "Using hostname for HttpClient request: $hostname" -Level "INFO"
             
             $handler = New-Object System.Net.Http.HttpClientHandler
             $handler.UseDefaultCredentials = $true
@@ -336,17 +376,22 @@ function Request-KerberosTicket {
             
             $client = New-Object System.Net.Http.HttpClient($handler)
             $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+            $client.Timeout = [TimeSpan]::FromSeconds(10)
             
             try {
-                $response = $client.GetAsync("https://$TargetSPN").Result
+                $response = $client.GetAsync("https://$hostname").Result
                 Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
                 $response.Dispose()
             } catch {
-                $statusCode = $_.Exception.Response.StatusCode
-                Write-Log "HttpClient request returned: $statusCode" -Level "INFO"
-                
-                if ($statusCode -eq 401) {
-                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                if ($_.Exception.InnerException -and $_.Exception.InnerException.Response) {
+                    $statusCode = $_.Exception.InnerException.Response.StatusCode
+                    Write-Log "HttpClient request returned: $statusCode" -Level "INFO"
+                    
+                    if ($statusCode -eq 401) {
+                        Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                    }
+                } else {
+                    Write-Log "HttpClient request failed with non-HTTP error: $($_.Exception.Message)" -Level "WARNING"
                 }
             }
             
@@ -357,17 +402,36 @@ function Request-KerberosTicket {
         
         # Method 4: Use PowerShell's Invoke-WebRequest
         try {
+            # Check timeout
+            if ((Get-Date) - $startTime -gt [TimeSpan]::FromSeconds($overallTimeout)) {
+                Write-Log "Timeout reached, skipping remaining methods" -Level "WARNING"
+                return $false
+            }
+            
             Write-Log "Attempting Invoke-WebRequest ticket request..." -Level "INFO"
             
+            # Convert SPN to proper hostname for HTTP request
+            $hostname = $TargetSPN
+            if ($TargetSPN -like "HTTP/*") {
+                $hostname = $TargetSPN -replace "^HTTP/", ""
+                $hostname = $hostname -replace ":\d+$", ""  # Remove port if present
+            }
+            
+            Write-Log "Using hostname for request: $hostname" -Level "INFO"
+            
             try {
-                $response = Invoke-WebRequest -Uri "https://$TargetSPN" -UseDefaultCredentials -TimeoutSec 10
+                $response = Invoke-WebRequest -Uri "https://$hostname" -UseDefaultCredentials -TimeoutSec 10 -ErrorAction Stop
                 Write-Log "Invoke-WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
             } catch {
-                $statusCode = $_.Exception.Response.StatusCode
-                Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
-                
-                if ($statusCode -eq 401) {
-                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                if ($_.Exception.Response) {
+                    $statusCode = $_.Exception.Response.StatusCode
+                    Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
+                    
+                    if ($statusCode -eq 401) {
+                        Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                    }
+                } else {
+                    Write-Log "Invoke-WebRequest failed with non-HTTP error: $($_.Exception.Message)" -Level "WARNING"
                 }
             }
         } catch {
