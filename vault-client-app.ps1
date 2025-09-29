@@ -121,13 +121,29 @@ try {
 try {
     Write-Host "Applying DNS resolution fix..." -ForegroundColor Cyan
     
-    # Extract IP from Vault URL and map to vault.local.lab
+    # Extract hostname/IP from Vault URL
     $vaultHost = [System.Uri]::new($VaultUrl).Host
     Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
     
-    # Use localhost for vault.local.lab
-    $vaultIP = "127.0.0.1"
-    Write-Host "Using IP: $vaultIP for vault.local.lab" -ForegroundColor Cyan
+    # Check if it's an IP address
+    $isIP = [System.Net.IPAddress]::TryParse($vaultHost, [ref]$null)
+    
+    if ($isIP) {
+        Write-Host "Detected IP address: $vaultHost" -ForegroundColor Cyan
+        $vaultIP = $vaultHost
+        Write-Host "Using IP: $vaultIP for vault.local.lab mapping" -ForegroundColor Cyan
+    } else {
+        Write-Host "Detected hostname: $vaultHost" -ForegroundColor Cyan
+        # Try to resolve hostname to IP
+        try {
+            $dnsResult = [System.Net.Dns]::GetHostAddresses($vaultHost)
+            $vaultIP = $dnsResult[0].IPAddressToString
+            Write-Host "Resolved hostname to IP: $vaultIP" -ForegroundColor Cyan
+        } catch {
+            Write-Host "Could not resolve hostname, using as-is" -ForegroundColor Yellow
+            $vaultIP = $vaultHost
+        }
+    }
     
     # Check if vault.local.lab resolves
     try {
