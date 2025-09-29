@@ -22,6 +22,26 @@ param(
 # Configuration and Logging Setup
 # =============================================================================
 
+# Bypass SSL certificate validation for testing (NOT for production)
+try {
+    Add-Type @"
+        using System.Net;
+        using System.Security.Cryptography.X509Certificates;
+        public class TrustAllCertsPolicy : ICertificatePolicy {
+            public bool CheckValidationResult(
+                ServicePoint svcPoint, X509Certificate certificate,
+                WebRequest request, int certificateProblem) {
+                return true;
+            }
+        }
+"@
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    Write-Host "SSL certificate validation bypassed for testing" -ForegroundColor Yellow
+} catch {
+    Write-Host "Could not bypass SSL certificate validation: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 # Quick DNS fix: Add hostname mapping for vault.local.lab
 try {
     Write-Host "Applying DNS resolution fix..." -ForegroundColor Cyan
@@ -496,14 +516,7 @@ function Get-SPNEGOTokenPInvoke {
             try {
                 Write-Log "Trying Invoke-WebRequest with Windows authentication..." -Level "INFO"
                 
-                # Convert SPN to hostname for the request
-                $hostname = $TargetSPN
-                if ($TargetSPN -like "HTTP/*") {
-                    $hostname = $TargetSPN -replace "^HTTP/", ""
-                    $hostname = $hostname -replace ":\d+$", ""
-                }
-                
-                Write-Log "Making request to: https://$hostname/v1/auth/gmsa/login" -Level "INFO"
+                Write-Log "Making request to: $VaultUrl/v1/auth/gmsa/login" -Level "INFO"
                 
                 # Create the request body
                 $body = @{
@@ -511,7 +524,8 @@ function Get-SPNEGOTokenPInvoke {
                 } | ConvertTo-Json
                 
                 # Make the request with Windows authentication
-                $response = Invoke-WebRequest -Uri "https://$hostname/v1/auth/gmsa/login" -Method POST -Body $body -ContentType "application/json" -UseDefaultCredentials -TimeoutSec 10 -ErrorAction Stop
+                # Skip SSL certificate validation for testing
+                $response = Invoke-WebRequest -Uri "$VaultUrl/v1/auth/gmsa/login" -Method POST -Body $body -ContentType "application/json" -UseDefaultCredentials -TimeoutSec 10 -SkipCertificateCheck -ErrorAction Stop
                 
                 Write-Log "Request completed successfully with status: $($response.StatusCode)" -Level "INFO"
                 
@@ -544,6 +558,8 @@ function Get-SPNEGOTokenPInvoke {
             $handler = New-Object System.Net.Http.HttpClientHandler
             $handler.UseDefaultCredentials = $true
             $handler.PreAuthenticate = $true
+            # Skip SSL certificate validation for testing
+            $handler.ServerCertificateCustomValidationCallback = { $true }
             
             $client = New-Object System.Net.Http.HttpClient($handler)
             $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
@@ -583,7 +599,58 @@ function Get-SPNEGOTokenPInvoke {
             
             $client.Dispose()
             
-            # Method 3: Since we have a valid Kerberos ticket, let's try a different approach
+            # Method 3: Custom approach to capture SPNEGO token from Windows SSPI
+            Write-Log "Trying custom SPNEGO token capture method..." -Level "INFO"
+            
+            try {
+                # Create a custom WebRequest that we can inspect
+                $customRequest = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+                $customRequest.Method = "POST"
+                $customRequest.UseDefaultCredentials = $true
+                $customRequest.PreAuthenticate = $true
+                $customRequest.ContentType = "application/json"
+                $customRequest.Timeout = 10000
+                
+                # Add request body
+                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes('{"role":"vault-gmsa-role"}')
+                $customRequest.ContentLength = $bodyBytes.Length
+                
+                $requestStream = $customRequest.GetRequestStream()
+                $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                $requestStream.Close()
+                
+                # Try to get the response
+                try {
+                    $customResponse = $customRequest.GetResponse()
+                    $customResponse.Close()
+                    Write-Log "Custom WebRequest completed successfully" -Level "INFO"
+                } catch {
+                    $statusCode = $_.Exception.Response.StatusCode
+                    Write-Log "Custom WebRequest returned: $statusCode" -Level "INFO"
+                    
+                    if ($statusCode -eq 401) {
+                        Write-Log "SUCCESS: 401 Unauthorized - Windows authentication triggered" -Level "SUCCESS"
+                    }
+                }
+                
+                # Check if Authorization header was added to the request
+                if ($customRequest.Headers.Contains("Authorization")) {
+                    $authHeader = $customRequest.Headers.GetValues("Authorization")
+                    if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                        Write-Log "SUCCESS: Real SPNEGO token captured from WebRequest!" -Level "SUCCESS"
+                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                        return $spnegoToken
+                    }
+                } else {
+                    Write-Log "No Authorization header found in WebRequest" -Level "WARNING"
+                }
+                
+            } catch {
+                Write-Log "Custom SPNEGO capture method failed: $($_.Exception.Message)" -Level "WARNING"
+            }
+            
+            # Method 4: Since we have a valid Kerberos ticket, let's try a different approach
             # Generate a token based on the Kerberos ticket information
             Write-Log "Attempting Kerberos-based token generation..." -Level "INFO"
             
