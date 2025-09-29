@@ -1,7 +1,7 @@
 param(
     [string]$VaultUrl = "https://vault.local.lab:8200",
     [string]$VaultRole = "vault-gmsa-role",
-    [string]$SPN = "HTTP/vault.local.lab",
+    [string]$SPN = "",  # Auto-detect from VaultUrl if not specified
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
     [string]$ConfigOutputDir = "C:\vault-client\config",
     [switch]$CreateScheduledTask = $false,
@@ -145,33 +145,38 @@ try {
         }
     }
     
-    # Check if vault.local.lab resolves
-    try {
-        $dnsResult = [System.Net.Dns]::GetHostAddresses("vault.local.lab")
-        Write-Host "vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
-    } catch {
-        Write-Host "WARNING: vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
-        
-        # Add to Windows hosts file
-        $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-        $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultIP vault.local.lab"
-        
-        # Check if entry already exists
-        $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
-        if ($hostsContent -notcontains "$vaultIP vault.local.lab") {
-            Add-Content -Path $hostsPath -Value $hostsEntry -Force
-            Write-Host "SUCCESS: Added '$vaultIP vault.local.lab' to hosts file" -ForegroundColor Green
-        } else {
-            Write-Host "Hosts entry already exists" -ForegroundColor Green
-        }
-        
-        # Flush DNS cache
+    # Only apply hostname mapping if using hostname-based SPN
+    if ($SPN -like "HTTP/vault.local.lab") {
+        # Check if vault.local.lab resolves
         try {
-            ipconfig /flushdns | Out-Null
-            Write-Host "SUCCESS: DNS cache flushed" -ForegroundColor Green
+            $dnsResult = [System.Net.Dns]::GetHostAddresses("vault.local.lab")
+            Write-Host "vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
         } catch {
-            Write-Host "WARNING: Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
+            Write-Host "WARNING: vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
+            
+            # Add to Windows hosts file
+            $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+            $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultIP vault.local.lab"
+            
+            # Check if entry already exists
+            $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
+            if ($hostsContent -notcontains "$vaultIP vault.local.lab") {
+                Add-Content -Path $hostsPath -Value $hostsEntry -Force
+                Write-Host "SUCCESS: Added '$vaultIP vault.local.lab' to hosts file" -ForegroundColor Green
+            } else {
+                Write-Host "Hosts entry already exists" -ForegroundColor Green
+            }
+            
+            # Flush DNS cache
+            try {
+                ipconfig /flushdns | Out-Null
+                Write-Host "SUCCESS: DNS cache flushed" -ForegroundColor Green
+            } catch {
+                Write-Host "WARNING: Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
+            }
         }
+    } else {
+        Write-Host "Using IP-based SPN: $SPN - no hostname mapping needed" -ForegroundColor Green
     }
 } catch {
     Write-Host "ERROR: DNS fix failed: $($_.Exception.Message)" -ForegroundColor Red
@@ -220,11 +225,41 @@ function Write-Log {
     }
 }
 
+# Auto-detect SPN if not specified
+if ([string]::IsNullOrEmpty($SPN)) {
+    $vaultHost = [System.Uri]::new($VaultUrl).Host
+    $isIP = [System.Net.IPAddress]::TryParse($vaultHost, [ref]$null)
+    
+    if ($isIP) {
+        $SPN = "HTTP/$vaultHost"
+        Write-Log "Auto-detected IP-based SPN: $SPN" -Level "INFO"
+        
+        # Check if IP SPN support is enabled
+        try {
+            $tryIPSPN = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters" -Name "TryIPSPN" -ErrorAction SilentlyContinue
+            if ($tryIPSPN -and $tryIPSPN.TryIPSPN -eq 1) {
+                Write-Log "SUCCESS: IP SPN support is enabled" -Level "SUCCESS"
+            } else {
+                Write-Log "WARNING: IP SPN support may not be enabled" -Level "WARNING"
+                Write-Log "To enable IP SPN support, run as Administrator:" -Level "WARNING"
+                Write-Log "reg add \"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters\" /v TryIPSPN /t REG_DWORD /d 1 /f" -Level "WARNING"
+            }
+        } catch {
+            Write-Log "WARNING: Could not check IP SPN support status" -Level "WARNING"
+        }
+    } else {
+        $SPN = "HTTP/$vaultHost"
+        Write-Log "Auto-detected hostname-based SPN: $SPN" -Level "INFO"
+    }
+}
+
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.3 (Win32 SSPI Integration)" -Level "INFO"
+Write-Log "Script version: 3.4 (IP SPN Support)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
+Write-Log "Vault URL: $VaultUrl" -Level "INFO"
+Write-Log "SPN: $SPN" -Level "INFO"
 
 # =============================================================================
 # SPNEGO Token Generation using Win32 SSPI
