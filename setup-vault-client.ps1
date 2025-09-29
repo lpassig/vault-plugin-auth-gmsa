@@ -52,10 +52,12 @@ function Test-ScriptUpdates {
     
     if ($sourceVersion -eq $targetVersion -and $sourceVersion -ne "unknown") {
         Write-Host "✅ Script versions match, no update needed" -ForegroundColor Green
+        Write-Host "Note: Run setup again to force overwrite with current directory version" -ForegroundColor Cyan
         return $false
     } else {
         Write-Host "⚠️ Script versions differ, update available!" -ForegroundColor Yellow
-        Write-Host "Run: .\setup-vault-client.ps1 -ForceUpdate" -ForegroundColor Cyan
+        Write-Host "Run: .\setup-vault-client.ps1" -ForegroundColor Cyan
+        Write-Host "The setup script will always overwrite with the current directory version" -ForegroundColor Cyan
         return $true
     }
 }
@@ -151,48 +153,33 @@ function Copy-ApplicationScript {
     $targetScript = "$ScriptsDir\vault-client-app.ps1"
     
     if (Test-Path $sourceScript) {
-        # Check if target script exists and compare versions
-        $needsUpdate = $ForceUpdate
+        Write-Host "Source script found: $sourceScript" -ForegroundColor Green
+        
+        # Extract version from source script
+        $sourceContent = Get-Content $sourceScript -Raw
+        $sourceVersion = if ($sourceContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
+        Write-Host "Source script version: $sourceVersion" -ForegroundColor Cyan
+        
+        # Always create backup of existing script if it exists
         if (Test-Path $targetScript) {
-            Write-Host "Target script exists, checking for updates..." -ForegroundColor Cyan
+            $backupScript = "$targetScript.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Copy-Item $targetScript $backupScript -Force
+            Write-Host "✅ Created backup: $backupScript" -ForegroundColor Green
             
-            # Extract version from source script
-            $sourceContent = Get-Content $sourceScript -Raw
-            $sourceVersion = if ($sourceContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
-            
-            # Extract version from target script
+            # Show target version for comparison
             $targetContent = Get-Content $targetScript -Raw
             $targetVersion = if ($targetContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
-            
-            Write-Host "Source script version: $sourceVersion" -ForegroundColor Cyan
-            Write-Host "Target script version: $targetVersion" -ForegroundColor Cyan
-            
-            if ($ForceUpdate) {
-                Write-Host "⚠️ Force update requested, updating script..." -ForegroundColor Yellow
-            } elseif ($sourceVersion -eq $targetVersion -and $sourceVersion -ne "unknown") {
-                Write-Host "✅ Script versions match, no update needed" -ForegroundColor Green
-                $needsUpdate = $false
-            } else {
-                Write-Host "⚠️ Script versions differ, updating..." -ForegroundColor Yellow
-            }
+            Write-Host "Previous target script version: $targetVersion" -ForegroundColor Cyan
         }
         
-        if ($needsUpdate) {
-            # Create backup of existing script
-            if (Test-Path $targetScript) {
-                $backupScript = "$targetScript.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-                Copy-Item $targetScript $backupScript -Force
-                Write-Host "✅ Created backup: $backupScript" -ForegroundColor Green
-            }
-            
-            # Copy the updated script
-            Copy-Item $sourceScript $targetScript -Force
-            Write-Host "✅ Application script updated: $targetScript" -ForegroundColor Green
-            
-            # Update scheduled task to use the new script
-            Write-Host "Updating scheduled task to use new script..." -ForegroundColor Yellow
-            Update-ScheduledTaskScript -TaskName $TaskName -ScriptPath $targetScript
-        }
+        # Always overwrite with current directory script
+        Write-Host "🔄 Overwriting scheduled task script with current directory version..." -ForegroundColor Yellow
+        Copy-Item $sourceScript $targetScript -Force
+        Write-Host "✅ Application script updated: $targetScript" -ForegroundColor Green
+        
+        # Update scheduled task to use the new script
+        Write-Host "Updating scheduled task to use new script..." -ForegroundColor Yellow
+        Update-ScheduledTaskScript -TaskName $TaskName -ScriptPath $targetScript
         
         return $targetScript
     } else {
@@ -539,11 +526,11 @@ USAGE EXAMPLES:
 6. Check for script updates:
    .\setup-vault-client.ps1 -CheckUpdates
 
-7. Force update script (when updates are available):
-   .\setup-vault-client.ps1 -ForceUpdate
+7. Update script (always overwrites with current directory version):
+   .\setup-vault-client.ps1
 
-8. Force update with custom parameters:
-   .\setup-vault-client.ps1 -ForceUpdate -VaultUrl "https://vault.company.com:8200"
+8. Update with custom parameters:
+   .\setup-vault-client.ps1 -VaultUrl "https://vault.company.com:8200"
 
 WHAT THIS SETUP DOES:
 - Checks prerequisites (Administrator, gMSA, Vault connectivity)
