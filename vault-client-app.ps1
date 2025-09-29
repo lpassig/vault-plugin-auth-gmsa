@@ -103,7 +103,7 @@ function Write-Log {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.1 (Automatic Kerberos ticket request)" -Level "INFO"
+Write-Log "Script version: 3.2 (Enhanced Kerberos ticket request)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 
@@ -282,7 +282,23 @@ function Request-KerberosTicket {
     try {
         Write-Log "Requesting Kerberos ticket for SPN: $TargetSPN" -Level "INFO"
         
-        # Method 1: Use Windows SSPI to request ticket via HTTP request
+        # Method 1: Use klist to request ticket directly
+        try {
+            Write-Log "Attempting direct klist ticket request..." -Level "INFO"
+            
+            # Try to request ticket using klist (if available)
+            $klistResult = klist get $TargetSPN 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "SUCCESS: klist ticket request succeeded" -Level "SUCCESS"
+                Write-Log "klist output: $klistResult" -Level "INFO"
+            } else {
+                Write-Log "klist ticket request failed: $klistResult" -Level "WARNING"
+            }
+        } catch {
+            Write-Log "klist ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Method 2: Use Windows SSPI to request ticket via HTTP request
         try {
             Write-Log "Attempting Windows SSPI ticket request..." -Level "INFO"
             
@@ -310,7 +326,7 @@ function Request-KerberosTicket {
             Write-Log "SSPI ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
-        # Method 2: Use HttpClient with Windows authentication
+        # Method 3: Use HttpClient with Windows authentication
         try {
             Write-Log "Attempting HttpClient ticket request..." -Level "INFO"
             
@@ -339,8 +355,27 @@ function Request-KerberosTicket {
             Write-Log "HttpClient ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
+        # Method 4: Use PowerShell's Invoke-WebRequest
+        try {
+            Write-Log "Attempting Invoke-WebRequest ticket request..." -Level "INFO"
+            
+            try {
+                $response = Invoke-WebRequest -Uri "https://$TargetSPN" -UseDefaultCredentials -TimeoutSec 10
+                Write-Log "Invoke-WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode
+                Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
+                
+                if ($statusCode -eq 401) {
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                }
+            }
+        } catch {
+            Write-Log "Invoke-WebRequest ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
         # Check if ticket was obtained
-        Start-Sleep -Seconds 2  # Give time for ticket to be cached
+        Start-Sleep -Seconds 3  # Give time for ticket to be cached
         
         $klistOutput = klist 2>&1
         if ($klistOutput -match $TargetSPN) {
@@ -349,6 +384,7 @@ function Request-KerberosTicket {
             return $true
         } else {
             Write-Log "WARNING: No Kerberos ticket found for $TargetSPN after request attempts" -Level "WARNING"
+            Write-Log "Available tickets: $($klistOutput -join '; ')" -Level "WARNING"
             return $false
         }
         
