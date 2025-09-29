@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.9 (HttpClient Alternative Method)" -Level "INFO"
+Write-Log "Script version: 3.10 (PowerShell 5.1 Compatible Alternative Method)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -516,61 +516,119 @@ function Get-SPNEGOTokenPInvoke {
                 
                 Write-Log "Attempting alternative SPNEGO generation method..." -Level "WARNING"
                 
-                # Alternative Method: Use HttpClient with UseDefaultCredentials to capture SPNEGO token
+                # Alternative Method: Use PowerShell 5.1 compatible HTTP methods to capture SPNEGO token
                 try {
-                    Write-Log "Alternative Method: Using HttpClient to capture SPNEGO token..." -Level "INFO"
+                    Write-Log "Alternative Method: Using PowerShell 5.1 compatible HTTP methods to capture SPNEGO token..." -Level "INFO"
                     
-                    # Create HttpClient with default credentials
-                    $httpClientHandler = New-Object System.Net.Http.HttpClientHandler
-                    $httpClientHandler.UseDefaultCredentials = $true
-                    $httpClientHandler.ServerCertificateCustomValidationCallback = {$true}
-                    
-                    $httpClient = New-Object System.Net.Http.HttpClient($httpClientHandler)
-                    $httpClient.Timeout = [TimeSpan]::FromSeconds(10)
-                    
-                    # Create a request that will trigger SPNEGO negotiation
-                    $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, "$VaultUrl/v1/auth/gmsa/login")
-                    $request.Headers.Add("User-Agent", "Vault-gMSA-Client/1.0")
-                    $request.Content = New-Object System.Net.Http.StringContent('{"role":"test","spnego":"test"}', [System.Text.Encoding]::UTF8, "application/json")
-                    
+                    # Method 1: Use WebRequest with UseDefaultCredentials
                     try {
-                        $response = $httpClient.SendAsync($request).Result
-                        Write-Log "Alternative HTTP request completed with status: $($response.StatusCode)" -Level "INFO"
+                        Write-Log "Method 1: Using WebRequest with UseDefaultCredentials..." -Level "INFO"
                         
-                        # Check if the request contains Authorization header
-                        if ($request.Headers.Authorization) {
-                            $authScheme = $request.Headers.Authorization.Scheme
-                            $authParameter = $request.Headers.Authorization.Parameter
+                        $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+                        $request.Method = "POST"
+                        $request.UseDefaultCredentials = $true
+                        $request.Timeout = 10000
+                        $request.UserAgent = "Vault-gMSA-Client/1.0"
+                        $request.ContentType = "application/json"
+                        
+                        # Add test content
+                        $body = '{"role":"test","spnego":"test"}'
+                        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+                        $request.ContentLength = $bodyBytes.Length
+                        
+                        $requestStream = $request.GetRequestStream()
+                        $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                        $requestStream.Close()
+                        
+                        try {
+                            $response = $request.GetResponse()
+                            Write-Log "Alternative WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
+                            $response.Close()
+                        } catch {
+                            $statusCode = $_.Exception.Response.StatusCode
+                            Write-Log "Alternative WebRequest returned: $statusCode" -Level "INFO"
                             
-                            if ($authScheme -eq "Negotiate" -and $authParameter) {
-                                Write-Log "SUCCESS: Captured SPNEGO token from alternative method!" -Level "SUCCESS"
-                                Write-Log "Token length: $($authParameter.Length) characters" -Level "INFO"
-                                [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                $httpClient.Dispose()
-                                return $authParameter
+                            # Check if the request contains Authorization header
+                            if ($request.Headers -and $request.Headers["Authorization"]) {
+                                $authHeader = $request.Headers["Authorization"]
+                                if ($authHeader -like "Negotiate *") {
+                                    $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                    Write-Log "SUCCESS: Captured SPNEGO token from WebRequest method!" -Level "SUCCESS"
+                                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                    [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                    return $spnegoToken
+                                }
                             }
                         }
-                        
-                        $response.Dispose()
                     } catch {
-                        Write-Log "Alternative HTTP request failed: $($_.Exception.Message)" -Level "INFO"
-                        
-                        # Check if the request contains Authorization header even after failure
-                        if ($request.Headers.Authorization) {
-                            $authScheme = $request.Headers.Authorization.Scheme
-                            $authParameter = $request.Headers.Authorization.Parameter
-                            
-                            if ($authScheme -eq "Negotiate" -and $authParameter) {
-                                Write-Log "SUCCESS: Captured SPNEGO token from alternative method (after failure)!" -Level "SUCCESS"
-                                Write-Log "Token length: $($authParameter.Length) characters" -Level "INFO"
-                                [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                $httpClient.Dispose()
-                                return $authParameter
-                            }
-                        }
+                        Write-Log "WebRequest method failed: $($_.Exception.Message)" -Level "WARNING"
                     }
                     
-                    $httpClient.Dispose()
+                    # Method 2: Use WebClient with UseDefaultCredentials
+                    try {
+                        Write-Log "Method 2: Using WebClient with UseDefaultCredentials..." -Level "INFO"
+                        
+                        $webClient = New-Object System.Net.WebClient
+                        $webClient.UseDefaultCredentials = $true
+                        $webClient.Headers.Add("User-Agent", "Vault-gMSA-Client/1.0")
+                        $webClient.Headers.Add("Content-Type", "application/json")
+                        
+                        $body = '{"role":"test","spnego":"test"}'
+                        
+                        try {
+                            $response = $webClient.UploadString("$VaultUrl/v1/auth/gmsa/login", "POST", $body)
+                            Write-Log "Alternative WebClient completed successfully" -Level "INFO"
+                        } catch {
+                            $statusCode = $_.Exception.Response.StatusCode
+                            Write-Log "Alternative WebClient returned: $statusCode" -Level "INFO"
+                            
+                            # Check if the request contains Authorization header
+                            if ($webClient.Headers -and $webClient.Headers["Authorization"]) {
+                                $authHeader = $webClient.Headers["Authorization"]
+                                if ($authHeader -like "Negotiate *") {
+                                    $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                    Write-Log "SUCCESS: Captured SPNEGO token from WebClient method!" -Level "SUCCESS"
+                                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                    [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                    return $spnegoToken
+                                }
+                            }
+                        }
+                        
+                        $webClient.Dispose()
+                    } catch {
+                        Write-Log "WebClient method failed: $($_.Exception.Message)" -Level "WARNING"
+                    }
+                    
+                    # Method 3: Use Invoke-WebRequest with UseDefaultCredentials
+                    try {
+                        Write-Log "Method 3: Using Invoke-WebRequest with UseDefaultCredentials..." -Level "INFO"
+                        
+                        $body = '{"role":"test","spnego":"test"}'
+                        
+                        try {
+                            $response = Invoke-WebRequest -Uri "$VaultUrl/v1/auth/gmsa/login" -Method Post -Body $body -ContentType "application/json" -UseDefaultCredentials -UseBasicParsing -TimeoutSec 10
+                            Write-Log "Alternative Invoke-WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
+                        } catch {
+                            $statusCode = $_.Exception.Response.StatusCode
+                            Write-Log "Alternative Invoke-WebRequest returned: $statusCode" -Level "INFO"
+                            
+                            # Check if the request contains Authorization header
+                            if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["Authorization"]) {
+                                $authHeader = $_.Exception.Response.Headers["Authorization"]
+                                if ($authHeader -like "Negotiate *") {
+                                    $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                    Write-Log "SUCCESS: Captured SPNEGO token from Invoke-WebRequest method!" -Level "SUCCESS"
+                                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                    [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                    return $spnegoToken
+                                }
+                            }
+                        }
+                    } catch {
+                        Write-Log "Invoke-WebRequest method failed: $($_.Exception.Message)" -Level "WARNING"
+                    }
+                    
                 } catch {
                     Write-Log "Alternative method failed: $($_.Exception.Message)" -Level "WARNING"
                 }
@@ -943,7 +1001,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.9 (HttpClient Alternative Method)" -Level "INFO"
+        Write-Log "Script version: 3.10 (PowerShell 5.1 Compatible Alternative Method)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
