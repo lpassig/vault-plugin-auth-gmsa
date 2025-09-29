@@ -24,7 +24,7 @@ param(
 
 # Quick DNS fix: Add hostname mapping for vault.local.lab
 try {
-    Write-Host "🔧 Applying DNS resolution fix..." -ForegroundColor Cyan
+    Write-Host "Applying DNS resolution fix..." -ForegroundColor Cyan
     
     # Extract IP from Vault URL and map to vault.local.lab
     $vaultHost = [System.Uri]::new($VaultUrl).Host
@@ -41,9 +41,9 @@ try {
     # Check if vault.local.lab resolves
     try {
         $dnsResult = [System.Net.Dns]::GetHostAddresses("vault.local.lab")
-        Write-Host "✅ vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
+        Write-Host "vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
     } catch {
-        Write-Host "⚠️ vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
+        Write-Host "WARNING: vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
         
         # Add to Windows hosts file
         $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
@@ -53,22 +53,22 @@ try {
         $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
         if ($hostsContent -notcontains "$vaultIP vault.local.lab") {
             Add-Content -Path $hostsPath -Value $hostsEntry -Force
-            Write-Host "✅ Added DNS mapping: $vaultIP → vault.local.lab" -ForegroundColor Green
-            Write-Host "📝 Entry added to: $hostsPath" -ForegroundColor Cyan
+            Write-Host "SUCCESS: Added DNS mapping: $vaultIP -> vault.local.lab" -ForegroundColor Green
+            Write-Host "Entry added to: $hostsPath" -ForegroundColor Cyan
         } else {
-            Write-Host "✅ DNS mapping already exists in hosts file" -ForegroundColor Green
+            Write-Host "SUCCESS: DNS mapping already exists in hosts file" -ForegroundColor Green
         }
         
         # Flush DNS cache
         try {
             ipconfig /flushdns | Out-Null
-            Write-Host "✅ DNS cache flushed" -ForegroundColor Green
+            Write-Host "SUCCESS: DNS cache flushed" -ForegroundColor Green
         } catch {
-            Write-Host "⚠️ Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
+            Write-Host "WARNING: Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
         }
     }
 } catch {
-    Write-Host "❌ DNS fix failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ERROR: DNS fix failed: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Manual fix: Add '$vaultIP vault.local.lab' to C:\Windows\System32\drivers\etc\hosts" -ForegroundColor Yellow
 }
 
@@ -145,12 +145,12 @@ function Request-KerberosTicket {
             Write-Log "Windows SSPI request completed with status: $($response.StatusCode)" -Level "INFO"
             
             if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
-                Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+                Write-Log "SUCCESS: 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
             }
             
             $client.Dispose()
         } catch {
-            Write-Log "❌ Windows-native ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "ERROR: Windows-native ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
         # Method 2: Use HTTP request to trigger Kerberos authentication
@@ -167,19 +167,19 @@ function Request-KerberosTicket {
             try {
                 $response = $request.GetResponse()
                 $response.Close()
-                Write-Log "✅ HTTP request completed successfully" -Level "SUCCESS"
+                Write-Log "SUCCESS: HTTP request completed successfully" -Level "SUCCESS"
             } catch {
                 $statusCode = $_.Exception.Response.StatusCode
                 Write-Log "HTTP request returned: $statusCode" -Level "INFO"
                 
                 if ($statusCode -eq 401) {
-                    Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
                 } elseif ($statusCode -eq 405) {
-                    Write-Log "✅ 405 Method Not Allowed - Expected for GET request" -Level "SUCCESS"
+                    Write-Log "SUCCESS: 405 Method Not Allowed - Expected for GET request" -Level "SUCCESS"
                 }
             }
         } catch {
-            Write-Log "❌ HTTP-based ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "ERROR: HTTP-based ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
         # Method 3: Use .NET HttpClient with Windows authentication
@@ -202,33 +202,33 @@ function Request-KerberosTicket {
             Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
             
             if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
-                Write-Log "✅ 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+                Write-Log "SUCCESS: 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
             } elseif ($response.StatusCode -eq [System.Net.HttpStatusCode]::MethodNotAllowed) {
-                Write-Log "✅ 405 Method Not Allowed - Expected for GET request" -Level "SUCCESS"
+                Write-Log "SUCCESS: 405 Method Not Allowed - Expected for GET request" -Level "SUCCESS"
             }
             
             $client.Dispose()
         } catch {
-            Write-Log "❌ HttpClient ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "ERROR: HttpClient ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
         # Check if ticket was successfully requested
         try {
             $klistOutputAfter = klist 2>&1
             if ($LASTEXITCODE -eq 0 -and $klistOutputAfter -match $SPN) {
-                Write-Log "✅ SUCCESS: Ticket found for SPN: $SPN" -Level "SUCCESS"
+                Write-Log "SUCCESS: SUCCESS: Ticket found for SPN: $SPN" -Level "SUCCESS"
                 return $true
             } else {
-                Write-Log "❌ FAILURE: No ticket found for SPN: $SPN after request attempts" -Level "ERROR"
+                Write-Log "ERROR: FAILURE: No ticket found for SPN: $SPN after request attempts" -Level "ERROR"
                 return $false
             }
         } catch {
-            Write-Log "❌ Could not verify ticket after request attempts" -Level "ERROR"
+            Write-Log "ERROR: Could not verify ticket after request attempts" -Level "ERROR"
             return $false
         }
         
     } catch {
-        Write-Log "❌ Ticket request failed: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "ERROR: Ticket request failed: $($_.Exception.Message)" -Level "ERROR"
         return $false
     }
 }
@@ -286,6 +286,7 @@ function Get-SPNEGOTokenSSPI {
                         $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
                         Write-Log "SPNEGO token generated successfully for SPN: $spn"
                         Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
+                        $client.Dispose()
                         return $spnegoToken
                     }
                 }
@@ -297,6 +298,7 @@ function Get-SPNEGOTokenSSPI {
         if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
             $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
                             Write-Log "SPNEGO token extracted from WWW-Authenticate header for SPN: $spn"
+                            $client.Dispose()
             return $spnegoToken
                         }
                     }
@@ -1157,7 +1159,7 @@ function Start-VaultClientApplication {
         
         # Check if running under gMSA identity
         if ($currentIdentity -notlike "*vault-gmsa$") {
-            Write-Log "❌ CRITICAL: Not running under gMSA identity!" -Level "ERROR"
+            Write-Log "ERROR: CRITICAL: Not running under gMSA identity!" -Level "ERROR"
             Write-Log "   Current identity: $currentIdentity" -Level "ERROR"
             Write-Log "   Expected identity: local.lab\vault-gmsa$" -Level "ERROR"
             Write-Log "   This will cause authentication failures." -Level "ERROR"
@@ -1169,14 +1171,14 @@ function Start-VaultClientApplication {
         try {
             $klistOutput = klist 2>&1
             if ($LASTEXITCODE -ne 0) {
-                Write-Log "❌ CRITICAL: No Kerberos tickets found!" -Level "ERROR"
+                Write-Log "ERROR: CRITICAL: No Kerberos tickets found!" -Level "ERROR"
                 Write-Log "   Run 'klist' to check ticket status" -Level "ERROR"
                 Write-Log "   SOLUTION: Ensure gMSA has valid tickets for SPN: $SPN" -Level "ERROR"
                 return $false
             }
             
             if ($klistOutput -notmatch $SPN) {
-                Write-Log "⚠️  WARNING: No Kerberos ticket found for SPN: $SPN" -Level "WARNING"
+                Write-Log "WARNING:  WARNING: No Kerberos ticket found for SPN: $SPN" -Level "WARNING"
                 Write-Log "   Available tickets:" -Level "WARNING"
                 Write-Log "   $($klistOutput -join '; ')" -Level "WARNING"
                 Write-Log "   Attempting to request ticket for SPN: $SPN" -Level "INFO"
@@ -1184,9 +1186,9 @@ function Start-VaultClientApplication {
                 # Attempt to request the missing ticket
                 $ticketRequested = Request-KerberosTicket -SPN $SPN -VaultUrl $VaultUrl
                 if ($ticketRequested) {
-                    Write-Log "✅ Successfully requested Kerberos ticket for SPN: $SPN" -Level "SUCCESS"
+                    Write-Log "SUCCESS: Successfully requested Kerberos ticket for SPN: $SPN" -Level "SUCCESS"
                 } else {
-                    Write-Log "❌ CRITICAL: Failed to request Kerberos ticket for SPN: $SPN" -Level "ERROR"
+                    Write-Log "ERROR: CRITICAL: Failed to request Kerberos ticket for SPN: $SPN" -Level "ERROR"
                     Write-Log "   Manual steps required:" -Level "ERROR"
                     Write-Log "   1. Ensure SPN is registered in Active Directory" -Level "ERROR"
                     Write-Log "   2. Verify gMSA has proper permissions" -Level "ERROR"
@@ -1194,10 +1196,10 @@ function Start-VaultClientApplication {
                     return $false
                 }
             } else {
-                Write-Log "✅ Kerberos ticket found for SPN: $SPN" -Level "SUCCESS"
+                Write-Log "SUCCESS: Kerberos ticket found for SPN: $SPN" -Level "SUCCESS"
             }
         } catch {
-            Write-Log "⚠️  WARNING: Could not check Kerberos tickets: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "WARNING:  WARNING: Could not check Kerberos tickets: $($_.Exception.Message)" -Level "WARNING"
         }
         
         # Check network connectivity
@@ -1205,17 +1207,17 @@ function Start-VaultClientApplication {
             $vaultHost = ($VaultUrl -replace 'https?://', '' -replace ':8200', '')
             $connection = Test-NetConnection -ComputerName $vaultHost -Port 8200 -WarningAction SilentlyContinue
             if ($connection.TcpTestSucceeded) {
-                Write-Log "✅ Network connectivity to Vault server confirmed" -Level "SUCCESS"
+                Write-Log "SUCCESS: Network connectivity to Vault server confirmed" -Level "SUCCESS"
             } else {
-                Write-Log "❌ CRITICAL: Cannot connect to Vault server: $vaultHost:8200" -Level "ERROR"
+                Write-Log "ERROR: CRITICAL: Cannot connect to Vault server: $vaultHost:8200" -Level "ERROR"
                 Write-Log "   SOLUTION: Check network connectivity and firewall rules" -Level "ERROR"
                 return $false
             }
         } catch {
-            Write-Log "⚠️  WARNING: Could not test network connectivity: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "WARNING:  WARNING: Could not test network connectivity: $($_.Exception.Message)" -Level "WARNING"
         }
         
-        Write-Log "✅ Production validation checks completed" -Level "SUCCESS"
+        Write-Log "SUCCESS: Production validation checks completed" -Level "SUCCESS"
         
         # Log configuration
         Write-Log "Configuration:" -Level "INFO"

@@ -17,7 +17,7 @@ Write-Host "This script adds DNS mapping for Kerberos authentication" -Foregroun
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")
 
 if (-not $isAdmin) {
-    Write-Host "⚠️ WARNING: Not running as Administrator" -ForegroundColor Yellow
+    Write-Host "WARNING: WARNING: Not running as Administrator" -ForegroundColor Yellow
     Write-Host "DNS cache flush may not work, but hosts file can still be updated" -ForegroundColor Yellow
 }
 
@@ -25,16 +25,16 @@ if (-not $isAdmin) {
 Write-Host "`n🔍 Checking current DNS resolution..." -ForegroundColor Cyan
 try {
     $dnsResult = [System.Net.Dns]::GetHostAddresses($VaultHostname)
-    Write-Host "✅ $VaultHostname already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
+    Write-Host "SUCCESS: $VaultHostname already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
     
     if ($dnsResult[0].IPAddressToString -eq $VaultIP) {
-        Write-Host "✅ DNS resolution is correct!" -ForegroundColor Green
+        Write-Host "SUCCESS: DNS resolution is correct!" -ForegroundColor Green
         exit 0
     } else {
-        Write-Host "⚠️ DNS resolves to different IP: $($dnsResult[0].IPAddressToString)" -ForegroundColor Yellow
+        Write-Host "WARNING: DNS resolves to different IP: $($dnsResult[0].IPAddressToString)" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "❌ $VaultHostname does not resolve" -ForegroundColor Red
+    Write-Host "ERROR: $VaultHostname does not resolve" -ForegroundColor Red
 }
 
 # Add to hosts file
@@ -48,27 +48,27 @@ try {
     $existingEntry = $hostsContent | Where-Object { $_ -like "*$VaultHostname*" }
     
     if ($existingEntry) {
-        Write-Host "⚠️ Entry already exists: $existingEntry" -ForegroundColor Yellow
+        Write-Host "WARNING: Entry already exists: $existingEntry" -ForegroundColor Yellow
         
         # Check if it's correct
         if ($existingEntry -like "*$VaultIP*") {
-            Write-Host "✅ Existing entry is correct" -ForegroundColor Green
+            Write-Host "SUCCESS: Existing entry is correct" -ForegroundColor Green
         } else {
-            Write-Host "❌ Existing entry has wrong IP, updating..." -ForegroundColor Red
+            Write-Host "ERROR: Existing entry has wrong IP, updating..." -ForegroundColor Red
             # Remove old entry and add new one
             $newContent = $hostsContent | Where-Object { $_ -notlike "*$VaultHostname*" }
             $newContent += $hostsEntry
             $newContent | Set-Content $hostsPath -Force
-            Write-Host "✅ Updated hosts file with correct IP" -ForegroundColor Green
+            Write-Host "SUCCESS: Updated hosts file with correct IP" -ForegroundColor Green
         }
     } else {
         # Add new entry
         Add-Content -Path $hostsPath -Value $hostsEntry -Force
-        Write-Host "✅ Added DNS mapping: $VaultIP → $VaultHostname" -ForegroundColor Green
+        Write-Host "SUCCESS: Added DNS mapping: $VaultIP → $VaultHostname" -ForegroundColor Green
         Write-Host "📝 Entry added to: $hostsPath" -ForegroundColor Cyan
     }
 } catch {
-    Write-Host "❌ Failed to update hosts file: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ERROR: Failed to update hosts file: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Manual fix: Add '$VaultIP $VaultHostname' to $hostsPath" -ForegroundColor Yellow
     exit 1
 }
@@ -78,28 +78,28 @@ Write-Host "`n🔄 Flushing DNS cache..." -ForegroundColor Cyan
 try {
     if ($isAdmin) {
         ipconfig /flushdns | Out-Null
-        Write-Host "✅ DNS cache flushed successfully" -ForegroundColor Green
+        Write-Host "SUCCESS: DNS cache flushed successfully" -ForegroundColor Green
     } else {
-        Write-Host "⚠️ Cannot flush DNS cache (need admin rights)" -ForegroundColor Yellow
+        Write-Host "WARNING: Cannot flush DNS cache (need admin rights)" -ForegroundColor Yellow
         Write-Host "Run as Administrator or restart the computer" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "❌ Failed to flush DNS cache: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ERROR: Failed to flush DNS cache: $($_.Exception.Message)" -ForegroundColor Red
 }
 
 # Test DNS resolution
 Write-Host "`n🧪 Testing DNS resolution..." -ForegroundColor Cyan
 try {
     $testResult = [System.Net.Dns]::GetHostAddresses($VaultHostname)
-    Write-Host "✅ $VaultHostname now resolves to: $($testResult[0].IPAddressToString)" -ForegroundColor Green
+    Write-Host "SUCCESS: $VaultHostname now resolves to: $($testResult[0].IPAddressToString)" -ForegroundColor Green
     
     if ($testResult[0].IPAddressToString -eq $VaultIP) {
         Write-Host "🎉 SUCCESS: DNS resolution is working correctly!" -ForegroundColor Green
     } else {
-        Write-Host "❌ DNS still resolves to wrong IP" -ForegroundColor Red
+        Write-Host "ERROR: DNS still resolves to wrong IP" -ForegroundColor Red
     }
 } catch {
-    Write-Host "❌ DNS resolution still failing" -ForegroundColor Red
+    Write-Host "ERROR: DNS resolution still failing" -ForegroundColor Red
 }
 
 # Test connectivity
@@ -107,12 +107,12 @@ Write-Host "`n🌐 Testing connectivity..." -ForegroundColor Cyan
 try {
     $pingResult = Test-NetConnection -ComputerName $VaultHostname -Port 8200 -WarningAction SilentlyContinue
     if ($pingResult.TcpTestSucceeded) {
-        Write-Host "✅ Can connect to $VaultHostname:8200" -ForegroundColor Green
+        Write-Host "SUCCESS: Can connect to $VaultHostname:8200" -ForegroundColor Green
     } else {
-        Write-Host "❌ Cannot connect to $VaultHostname:8200" -ForegroundColor Red
+        Write-Host "ERROR: Cannot connect to $VaultHostname:8200" -ForegroundColor Red
     }
 } catch {
-    Write-Host "❌ Connectivity test failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "ERROR: Connectivity test failed: $($_.Exception.Message)" -ForegroundColor Red
 }
 
 Write-Host "`n=== DNS Fix Complete ===" -ForegroundColor Green
