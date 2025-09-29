@@ -317,7 +317,11 @@ function Get-SPNEGOTokenPInvoke {
                 
                 # Decode common error codes
                 switch ($result) {
-                    0x80090308 { Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR" }
+                    0x80090308 { 
+                        Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR"
+                        Write-Log "CRITICAL: The SPN '$TargetSPN' is not registered in Active Directory" -Level "ERROR"
+                        Write-Log "SOLUTION: Register the SPN using: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
+                    }
                     0x8009030E { Write-Log "ERROR: SEC_E_NO_CREDENTIALS - No credentials available" -Level "ERROR" }
                     0x8009030F { Write-Log "ERROR: SEC_E_NO_AUTHENTICATING_AUTHORITY - Cannot contact domain controller" -Level "ERROR" }
                     0x80090311 { Write-Log "ERROR: SEC_E_WRONG_PRINCIPAL - SPN does not match server" -Level "ERROR" }
@@ -325,10 +329,11 @@ function Get-SPNEGOTokenPInvoke {
                 }
                 
                 Write-Log "Troubleshooting steps:" -Level "ERROR"
-                Write-Log "1. Verify SPN '$TargetSPN' is registered in Active Directory" -Level "ERROR"
-                Write-Log "2. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
-                Write-Log "3. Check domain controller connectivity" -Level "ERROR"
-                Write-Log "4. Verify gMSA account is properly configured" -Level "ERROR"
+                Write-Log "1. Register SPN: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
+                Write-Log "2. Verify SPN exists: setspn -L vault-gmsa" -Level "ERROR"
+                Write-Log "3. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
+                Write-Log "4. Check domain controller connectivity" -Level "ERROR"
+                Write-Log "5. Verify gMSA account is properly configured" -Level "ERROR"
                 
                 [SSPI]::FreeCredentialsHandle([ref]$credHandle)
                 return $null
@@ -372,17 +377,8 @@ function Get-SPNEGOTokenPInvoke {
             return $null
         }
         
-        # Production-ready: Do NOT generate fake tokens when real SPNEGO generation fails
-        Write-Log "ERROR: Win32 SSPI failed to generate real SPNEGO token" -Level "ERROR"
-        Write-Log "This indicates a Kerberos/SSPI configuration issue that must be resolved" -Level "ERROR"
-        Write-Log "Possible causes:" -Level "ERROR"
-        Write-Log "  1. No valid Kerberos ticket for SPN: $TargetSPN" -Level "ERROR"
-        Write-Log "  2. gMSA account not properly configured" -Level "ERROR"
-        Write-Log "  3. Domain controller connectivity issues" -Level "ERROR"
-        Write-Log "  4. Windows SSPI security context initialization failed" -Level "ERROR"
-        Write-Log "PRODUCTION REQUIREMENT: Only real SPNEGO tokens are accepted by Vault" -Level "ERROR"
-        Write-Log "Fake tokens will be rejected with 'spnego token unmarshal failed' error" -Level "ERROR"
-        
+        # This code should never be reached if the above logic is correct
+        Write-Log "ERROR: Unexpected code path - SPNEGO generation failed" -Level "ERROR"
         return $null
         
     } catch {
