@@ -433,6 +433,26 @@ function Request-KerberosTicket {
             
             Write-Log "Using hostname for request: $hostname" -Level "INFO"
             
+            # Method 2A: Try to request service ticket using klist with specific SPN
+            Write-Log "Method 2A: Requesting service ticket using klist for SPN: $TargetSPN" -Level "INFO"
+            try {
+                # Use klist to request a service ticket for the specific SPN
+                $klistResult = klist -target:$TargetSPN 2>&1
+                Write-Log "klist service ticket request result: $klistResult" -Level "INFO"
+                
+                # Check if the request was successful
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Log "SUCCESS: Service ticket request completed" -Level "SUCCESS"
+                } else {
+                    Write-Log "Service ticket request failed with exit code: $LASTEXITCODE" -Level "WARNING"
+                }
+            } catch {
+                Write-Log "klist service ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+            }
+            
+            # Method 2B: Create HTTP request to trigger Kerberos ticket request
+            Write-Log "Method 2B: Creating HTTP request to trigger service ticket..." -Level "INFO"
+            
             # Create HTTP request to trigger Kerberos ticket request
             $request = [System.Net.WebRequest]::Create("https://$hostname")
             $request.Method = "GET"
@@ -453,14 +473,59 @@ function Request-KerberosTicket {
                     Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
                 }
             }
+            
+            # Method 2C: Try using Invoke-WebRequest to trigger service ticket
+            Write-Log "Method 2C: Using Invoke-WebRequest to trigger service ticket..." -Level "INFO"
+            try {
+                $webResponse = Invoke-WebRequest -Uri "https://$hostname" -UseDefaultCredentials -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+                Write-Log "Invoke-WebRequest completed with status: $($webResponse.StatusCode)" -Level "INFO"
+            } catch {
+                if ($_.Exception.Response) {
+                    $statusCode = $_.Exception.Response.StatusCode
+                    Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
+                    
+                    if ($statusCode -eq 401) {
+                        Write-Log "SUCCESS: 401 Unauthorized - Service ticket request triggered" -Level "SUCCESS"
+                    }
+                } else {
+                    Write-Log "Invoke-WebRequest failed with non-HTTP error: $($_.Exception.Message)" -Level "WARNING"
+                }
+            }
+            
         } catch {
             Write-Log "SSPI ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
+        # Method 3: Try using PowerShell's built-in Kerberos functionality
+        try {
+            Write-Log "Method 3: Using PowerShell's built-in Kerberos functionality..." -Level "INFO"
+            
+            # Try to create a credential and use it to request a service ticket
+            $credential = [System.Net.CredentialCache]::DefaultCredentials
+            if ($credential) {
+                Write-Log "Default credentials available: $($credential.GetType().Name)" -Level "INFO"
+                
+                # Try to make a request that will trigger service ticket request
+                try {
+                    $webClient = New-Object System.Net.WebClient
+                    $webClient.UseDefaultCredentials = $true
+                    $webClient.DownloadString("https://$hostname")
+                    Write-Log "WebClient request completed successfully" -Level "INFO"
+                } catch {
+                    Write-Log "WebClient request failed: $($_.Exception.Message)" -Level "INFO"
+                }
+            }
+        } catch {
+            Write-Log "PowerShell Kerberos method failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
         # Check if ticket was obtained
-        Start-Sleep -Seconds 3  # Give time for ticket to be cached
+        Start-Sleep -Seconds 5  # Give more time for ticket to be cached
         
         $klistOutput = klist 2>&1
+        Write-Log "Final klist check for SPN: $TargetSPN" -Level "INFO"
+        Write-Log "Full klist output: $($klistOutput -join '; ')" -Level "INFO"
+        
         if ($klistOutput -match $TargetSPN) {
             Write-Log "SUCCESS: Kerberos ticket obtained for $TargetSPN" -Level "SUCCESS"
             Write-Log "Ticket details: $($klistOutput -join '; ')" -Level "INFO"
@@ -468,6 +533,15 @@ function Request-KerberosTicket {
         } else {
             Write-Log "WARNING: No Kerberos ticket found for $TargetSPN after request attempts" -Level "WARNING"
             Write-Log "Available tickets: $($klistOutput -join '; ')" -Level "WARNING"
+            
+            # Additional debugging: Check if we have any HTTP service tickets
+            $httpTickets = $klistOutput | Where-Object { $_ -match "HTTP/" }
+            if ($httpTickets) {
+                Write-Log "Found HTTP service tickets: $($httpTickets -join '; ')" -Level "INFO"
+            } else {
+                Write-Log "No HTTP service tickets found in cache" -Level "WARNING"
+            }
+            
             return $false
         }
         
