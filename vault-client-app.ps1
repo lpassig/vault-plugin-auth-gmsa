@@ -98,7 +98,7 @@ function Write-Log {
     
     # Also write to log file
     try {
-    $logFile = "$ConfigOutputDir\vault-client.log"
+        $logFile = "$ConfigOutputDir\vault-client.log"
         Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
     } catch {
         Write-Host "Failed to write to log file: $($_.Exception.Message)" -ForegroundColor Red
