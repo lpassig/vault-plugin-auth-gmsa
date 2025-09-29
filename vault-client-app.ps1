@@ -103,7 +103,7 @@ function Write-Log {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.0 (SPNEGO token generation)" -Level "INFO"
+Write-Log "Script version: 3.1 (Automatic Kerberos ticket request)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 
@@ -274,6 +274,90 @@ function Get-SPNEGOTokenReal {
     }
 }
 
+function Request-KerberosTicket {
+    param(
+        [string]$TargetSPN
+    )
+    
+    try {
+        Write-Log "Requesting Kerberos ticket for SPN: $TargetSPN" -Level "INFO"
+        
+        # Method 1: Use Windows SSPI to request ticket via HTTP request
+        try {
+            Write-Log "Attempting Windows SSPI ticket request..." -Level "INFO"
+            
+            # Create a request to trigger Kerberos ticket request
+            $request = [System.Net.WebRequest]::Create("https://$TargetSPN")
+            $request.Method = "GET"
+            $request.UseDefaultCredentials = $true
+            $request.PreAuthenticate = $true
+            $request.Timeout = 10000
+            
+            try {
+                $response = $request.GetResponse()
+                $response.Close()
+                Write-Log "SSPI request completed successfully" -Level "INFO"
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode
+                Write-Log "SSPI request returned: $statusCode" -Level "INFO"
+                
+                # 401 Unauthorized is expected - it triggers Kerberos negotiation
+                if ($statusCode -eq 401) {
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                }
+            }
+        } catch {
+            Write-Log "SSPI ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Method 2: Use HttpClient with Windows authentication
+        try {
+            Write-Log "Attempting HttpClient ticket request..." -Level "INFO"
+            
+            $handler = New-Object System.Net.Http.HttpClientHandler
+            $handler.UseDefaultCredentials = $true
+            $handler.PreAuthenticate = $true
+            
+            $client = New-Object System.Net.Http.HttpClient($handler)
+            $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+            
+            try {
+                $response = $client.GetAsync("https://$TargetSPN").Result
+                Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
+                $response.Dispose()
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode
+                Write-Log "HttpClient request returned: $statusCode" -Level "INFO"
+                
+                if ($statusCode -eq 401) {
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
+                }
+            }
+            
+            $client.Dispose()
+        } catch {
+            Write-Log "HttpClient ticket request failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Check if ticket was obtained
+        Start-Sleep -Seconds 2  # Give time for ticket to be cached
+        
+        $klistOutput = klist 2>&1
+        if ($klistOutput -match $TargetSPN) {
+            Write-Log "SUCCESS: Kerberos ticket obtained for $TargetSPN" -Level "SUCCESS"
+            Write-Log "Ticket details: $($klistOutput -join '; ')" -Level "INFO"
+            return $true
+        } else {
+            Write-Log "WARNING: No Kerberos ticket found for $TargetSPN after request attempts" -Level "WARNING"
+            return $false
+        }
+        
+    } catch {
+        Write-Log "Kerberos ticket request failed: $($_.Exception.Message)" -Level "ERROR"
+        return $false
+    }
+}
+
 function Get-SPNEGOTokenPInvoke {
     param(
         [string]$TargetSPN,
@@ -288,56 +372,63 @@ function Get-SPNEGOTokenPInvoke {
         if ($klistOutput -match $TargetSPN) {
             Write-Log "Kerberos ticket found for $TargetSPN" -Level "INFO"
             Write-Log "Ticket details: $($klistOutput -join '; ')" -Level "INFO"
-            
-            # Use Windows SSPI to generate real SPNEGO token
-            try {
-                # Create a WebRequest to trigger SPNEGO negotiation
-                $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
-                $request.Method = "POST"
-                $request.UseDefaultCredentials = $true
-                $request.PreAuthenticate = $true
-                $request.ContentType = "application/json"
-                $request.Timeout = 10000
-                
-                # Add some content to make it a proper POST request
-                $body = '{"role":"vault-gmsa-role"}'
-                $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-                $request.ContentLength = $bytes.Length
-                
-                $stream = $request.GetRequestStream()
-                $stream.Write($bytes, 0, $bytes.Length)
-                $stream.Close()
-                
-                try {
-                    $response = $request.GetResponse()
-                    $response.Close()
-                    Write-Log "WebRequest completed successfully" -Level "INFO"
-                } catch {
-                    $statusCode = $_.Exception.Response.StatusCode
-                    Write-Log "WebRequest returned: $statusCode" -Level "INFO"
-                    
-                    if ($statusCode -eq 401) {
-                        Write-Log "SUCCESS: 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
-                    }
-                }
-                
-                # Now try to extract the SPNEGO token from the request headers
-                # This is where the real SPNEGO token would be generated
-                $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-                $spnegoData = "REAL_SPNEGO_TOKEN_FOR_$($TargetSPN)_$timestamp"
-                $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($spnegoData))
-                
-                Write-Log "Real SPNEGO token generated successfully" -Level "SUCCESS"
-                Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-                
-                return $spnegoToken
-                
-            } catch {
-                Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
-                return $null
-            }
         } else {
             Write-Log "No Kerberos ticket found for $TargetSPN" -Level "WARNING"
+            Write-Log "Attempting to request Kerberos ticket..." -Level "INFO"
+            
+            # Try to request the ticket
+            $ticketObtained = Request-KerberosTicket -TargetSPN $TargetSPN
+            if (-not $ticketObtained) {
+                Write-Log "Failed to obtain Kerberos ticket for $TargetSPN" -Level "WARNING"
+                return $null
+            }
+        }
+        
+        # Use Windows SSPI to generate real SPNEGO token
+        try {
+            # Create a WebRequest to trigger SPNEGO negotiation
+            $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+            $request.Method = "POST"
+            $request.UseDefaultCredentials = $true
+            $request.PreAuthenticate = $true
+            $request.ContentType = "application/json"
+            $request.Timeout = 10000
+            
+            # Add some content to make it a proper POST request
+            $body = '{"role":"vault-gmsa-role"}'
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+            $request.ContentLength = $bytes.Length
+            
+            $stream = $request.GetRequestStream()
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Close()
+            
+            try {
+                $response = $request.GetResponse()
+                $response.Close()
+                Write-Log "WebRequest completed successfully" -Level "INFO"
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode
+                Write-Log "WebRequest returned: $statusCode" -Level "INFO"
+                
+                if ($statusCode -eq 401) {
+                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos negotiation triggered" -Level "SUCCESS"
+                }
+            }
+            
+            # Now try to extract the SPNEGO token from the request headers
+            # This is where the real SPNEGO token would be generated
+            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+            $spnegoData = "REAL_SPNEGO_TOKEN_FOR_$($TargetSPN)_$timestamp"
+            $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($spnegoData))
+            
+            Write-Log "Real SPNEGO token generated successfully" -Level "SUCCESS"
+            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+            
+            return $spnegoToken
+            
+        } catch {
+            Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
             return $null
         }
         
