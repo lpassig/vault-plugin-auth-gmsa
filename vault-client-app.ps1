@@ -530,46 +530,88 @@ function Get-SPNEGOTokenPInvoke {
                 $vaultHost = [System.Uri]::new($VaultUrl).Host
                 Write-Log "Targeting SPN: HTTP/$vaultHost" -Level "INFO"
                 
-                # Use a test endpoint that will trigger SPNEGO negotiation
-                # Try different endpoints that might support SPNEGO
-                $testUrls = @(
-                    "http://$vaultHost",  # Simple HTTP
-                    "https://$vaultHost", # HTTPS
-                    "$VaultUrl/v1/sys/health", # Vault health endpoint
-                    "$VaultUrl/v1/sys/status"   # Vault status endpoint
-                )
+                # Method 1A: Try to generate SPNEGO token by making a request to a non-existent endpoint
+                # This should trigger Windows SSPI to generate a SPNEGO token
+                Write-Log "Attempting SPNEGO token generation using non-existent endpoint..." -Level "INFO"
                 
-                foreach ($testUrl in $testUrls) {
-                    Write-Log "Trying SPNEGO generation with: $testUrl" -Level "INFO"
+                $testEndpoint = "$VaultUrl/v1/auth/nonexistent/login"
+                $webRequest = [System.Net.WebRequest]::Create($testEndpoint)
+                $webRequest.Method = "POST"
+                $webRequest.UseDefaultCredentials = $true
+                $webRequest.PreAuthenticate = $true
+                $webRequest.Timeout = 10000
+                $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                $webRequest.ContentType = "application/json"
+                
+                # Add request body
+                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes('{"test":"data"}')
+                $webRequest.ContentLength = $bodyBytes.Length
+                
+                $requestStream = $webRequest.GetRequestStream()
+                $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                $requestStream.Close()
+                
+                try {
+                    $webResponse = $webRequest.GetResponse()
+                    Write-Log "Test endpoint request completed with status: $($webResponse.StatusCode)" -Level "INFO"
+                    $webResponse.Close()
+                } catch {
+                    $webStatusCode = $_.Exception.Response.StatusCode
+                    Write-Log "Test endpoint request returned: $webStatusCode" -Level "INFO"
                     
-                    # Create WebRequest targeting the specific SPN
-                    $webRequest = [System.Net.WebRequest]::Create($testUrl)
-                    $webRequest.Method = "GET"
-                    $webRequest.UseDefaultCredentials = $true
-                    $webRequest.PreAuthenticate = $true
-                    $webRequest.Timeout = 10000
-                    $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
-                    
-                    try {
-                        $webResponse = $webRequest.GetResponse()
-                        Write-Log "SPNEGO request completed with status: $($webResponse.StatusCode)" -Level "INFO"
-                        $webResponse.Close()
-                    } catch {
-                        $webStatusCode = $_.Exception.Response.StatusCode
-                        Write-Log "SPNEGO request returned: $webStatusCode" -Level "INFO"
-                        
-                        # Check if Authorization header was added (this contains our SPNEGO token)
-                        if ($webRequest.Headers.Contains("Authorization")) {
-                            $authHeader = $webRequest.Headers.GetValues("Authorization")
-                            if ($authHeader -and $authHeader[0] -like "Negotiate *") {
-                                $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
-                                Write-Log "SUCCESS: Real SPNEGO token captured from Windows SSPI!" -Level "SUCCESS"
-                                Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-                                return $spnegoToken
-                            }
+                    # Check if Authorization header was added (this contains our SPNEGO token)
+                    if ($webRequest.Headers.Contains("Authorization")) {
+                        $authHeader = $webRequest.Headers.GetValues("Authorization")
+                        if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                            $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                            Write-Log "SUCCESS: Real SPNEGO token captured from Windows SSPI!" -Level "SUCCESS"
+                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                            return $spnegoToken
                         }
                     }
                 }
+                
+                # Method 1B: Try using a different approach - make a request to the actual login endpoint
+                # but without credentials first to trigger SPNEGO negotiation
+                Write-Log "Attempting SPNEGO token generation using actual login endpoint..." -Level "INFO"
+                
+                $loginEndpoint = "$VaultUrl/v1/auth/gmsa/login"
+                $webRequest = [System.Net.WebRequest]::Create($loginEndpoint)
+                $webRequest.Method = "POST"
+                $webRequest.UseDefaultCredentials = $true
+                $webRequest.PreAuthenticate = $true
+                $webRequest.Timeout = 10000
+                $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                $webRequest.ContentType = "application/json"
+                
+                # Add request body with role parameter
+                $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes('{"role":"vault-gmsa-role"}')
+                $webRequest.ContentLength = $bodyBytes.Length
+                
+                $requestStream = $webRequest.GetRequestStream()
+                $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                $requestStream.Close()
+                
+                try {
+                    $webResponse = $webRequest.GetResponse()
+                    Write-Log "Login endpoint request completed with status: $($webResponse.StatusCode)" -Level "INFO"
+                    $webResponse.Close()
+                } catch {
+                    $webStatusCode = $_.Exception.Response.StatusCode
+                    Write-Log "Login endpoint request returned: $webStatusCode" -Level "INFO"
+                    
+                    # Check if Authorization header was added (this contains our SPNEGO token)
+                    if ($webRequest.Headers.Contains("Authorization")) {
+                        $authHeader = $webRequest.Headers.GetValues("Authorization")
+                        if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                            $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                            Write-Log "SUCCESS: Real SPNEGO token captured from Windows SSPI!" -Level "SUCCESS"
+                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                            return $spnegoToken
+                        }
+                    }
+                }
+                
             } catch {
                 Write-Log "Method 1 (SPNEGO generation) failed: $($_.Exception.Message)" -Level "WARNING"
             }
@@ -678,8 +720,8 @@ function Get-SPNEGOTokenPInvoke {
                 } catch {
                     $statusCode = $_.Exception.InnerException.Response.StatusCode
                     Write-Log "Initial request returned: $statusCode" -Level "INFO"
-                    
-                    if ($statusCode -eq 401) {
+                
+                if ($statusCode -eq 401) {
                         Write-Log "SUCCESS: Got 401 challenge - checking for WWW-Authenticate header" -Level "SUCCESS"
                         
                         # Check for WWW-Authenticate: Negotiate header
