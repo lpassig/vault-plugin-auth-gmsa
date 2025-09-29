@@ -530,30 +530,43 @@ function Get-SPNEGOTokenPInvoke {
                 $vaultHost = [System.Uri]::new($VaultUrl).Host
                 Write-Log "Targeting SPN: HTTP/$vaultHost" -Level "INFO"
                 
-                # Create WebRequest targeting the specific SPN
-                $webRequest = [System.Net.WebRequest]::Create($VaultUrl)
-                $webRequest.Method = "GET"
-                $webRequest.UseDefaultCredentials = $true
-                $webRequest.PreAuthenticate = $true
-                $webRequest.Timeout = 10000
-                $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                # Use a test endpoint that will trigger SPNEGO negotiation
+                # Try different endpoints that might support SPNEGO
+                $testUrls = @(
+                    "http://$vaultHost",  # Simple HTTP
+                    "https://$vaultHost", # HTTPS
+                    "$VaultUrl/v1/sys/health", # Vault health endpoint
+                    "$VaultUrl/v1/sys/status"   # Vault status endpoint
+                )
                 
-                try {
-                    $webResponse = $webRequest.GetResponse()
-                    Write-Log "SPNEGO request completed with status: $($webResponse.StatusCode)" -Level "INFO"
-                    $webResponse.Close()
-                } catch {
-                    $webStatusCode = $_.Exception.Response.StatusCode
-                    Write-Log "SPNEGO request returned: $webStatusCode" -Level "INFO"
+                foreach ($testUrl in $testUrls) {
+                    Write-Log "Trying SPNEGO generation with: $testUrl" -Level "INFO"
                     
-                    # Check if Authorization header was added (this contains our SPNEGO token)
-                    if ($webRequest.Headers.Contains("Authorization")) {
-                        $authHeader = $webRequest.Headers.GetValues("Authorization")
-                        if ($authHeader -and $authHeader[0] -like "Negotiate *") {
-                            $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
-                            Write-Log "SUCCESS: Real SPNEGO token captured from Windows SSPI!" -Level "SUCCESS"
-                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-                            return $spnegoToken
+                    # Create WebRequest targeting the specific SPN
+                    $webRequest = [System.Net.WebRequest]::Create($testUrl)
+                    $webRequest.Method = "GET"
+                    $webRequest.UseDefaultCredentials = $true
+                    $webRequest.PreAuthenticate = $true
+                    $webRequest.Timeout = 10000
+                    $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                    
+                    try {
+                        $webResponse = $webRequest.GetResponse()
+                        Write-Log "SPNEGO request completed with status: $($webResponse.StatusCode)" -Level "INFO"
+                        $webResponse.Close()
+                    } catch {
+                        $webStatusCode = $_.Exception.Response.StatusCode
+                        Write-Log "SPNEGO request returned: $webStatusCode" -Level "INFO"
+                        
+                        # Check if Authorization header was added (this contains our SPNEGO token)
+                        if ($webRequest.Headers.Contains("Authorization")) {
+                            $authHeader = $webRequest.Headers.GetValues("Authorization")
+                            if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                                $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                                Write-Log "SUCCESS: Real SPNEGO token captured from Windows SSPI!" -Level "SUCCESS"
+                                Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                                return $spnegoToken
+                            }
                         }
                     }
                 }
