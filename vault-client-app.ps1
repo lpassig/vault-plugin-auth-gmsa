@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.6 (Enhanced gMSA Debugging)" -Level "INFO"
+Write-Log "Script version: 3.7 (Multi-Method Credential Acquisition)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -372,8 +372,15 @@ function Get-SPNEGOTokenPInvoke {
             $credHandle = New-Object SSPI+SECURITY_HANDLE
             $expiry = New-Object SSPI+SECURITY_INTEGER
             
+            # Try different approaches to acquire credentials
+            Write-Log "Attempting to acquire credentials handle..." -Level "INFO"
+            
+            # Method 1: Try with explicit principal (current user)
+            $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            Write-Log "Using current user as principal: $currentUser" -Level "INFO"
+            
             $result = [SSPI]::AcquireCredentialsHandle(
-                $null,                                    # Principal
+                $currentUser,                             # Principal (current user)
                 "Negotiate",                              # Package (SPNEGO)
                 [SSPI]::SECPKG_CRED_OUTBOUND,            # Credential use
                 [IntPtr]::Zero,                          # Logon ID
@@ -383,6 +390,42 @@ function Get-SPNEGOTokenPInvoke {
                 [ref]$credHandle,                        # Credential handle
                 [ref]$expiry                             # Expiry
             )
+            
+            if ($result -ne [SSPI]::SEC_E_OK) {
+                Write-Log "Method 1 failed with result: 0x$($result.ToString('X8')), trying Method 2..." -Level "WARNING"
+                
+                # Method 2: Try with null principal (use default credentials)
+                Write-Log "Trying with null principal (default credentials)..." -Level "INFO"
+                $result = [SSPI]::AcquireCredentialsHandle(
+                    $null,                                # Principal (null = default)
+                    "Negotiate",                          # Package (SPNEGO)
+                    [SSPI]::SECPKG_CRED_OUTBOUND,        # Credential use
+                    [IntPtr]::Zero,                      # Logon ID
+                    [IntPtr]::Zero,                      # Auth data
+                    [IntPtr]::Zero,                      # Get key function
+                    [IntPtr]::Zero,                      # Get key argument
+                    [ref]$credHandle,                    # Credential handle
+                    [ref]$expiry                         # Expiry
+                )
+                
+                if ($result -ne [SSPI]::SEC_E_OK) {
+                    Write-Log "Method 2 failed with result: 0x$($result.ToString('X8')), trying Method 3..." -Level "WARNING"
+                    
+                    # Method 3: Try with Kerberos package directly
+                    Write-Log "Trying with Kerberos package directly..." -Level "INFO"
+                    $result = [SSPI]::AcquireCredentialsHandle(
+                        $null,                            # Principal
+                        "Kerberos",                       # Package (Kerberos)
+                        [SSPI]::SECPKG_CRED_OUTBOUND,    # Credential use
+                        [IntPtr]::Zero,                  # Logon ID
+                        [IntPtr]::Zero,                  # Auth data
+                        [IntPtr]::Zero,                  # Get key function
+                        [IntPtr]::Zero,                  # Get key argument
+                        [ref]$credHandle,                # Credential handle
+                        [ref]$expiry                     # Expiry
+                    )
+                }
+            }
             
             if ($result -ne [SSPI]::SEC_E_OK) {
                 Write-Log "ERROR: AcquireCredentialsHandle failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
@@ -453,6 +496,47 @@ function Get-SPNEGOTokenPInvoke {
                 Write-Log "4. Ensure Linux Vault server has proper keytab with SPN" -Level "ERROR"
                 Write-Log "5. Check domain controller connectivity from Linux" -Level "ERROR"
                 Write-Log "6. Verify gMSA account is properly configured" -Level "ERROR"
+                
+                Write-Log "Attempting fallback SPNEGO generation method..." -Level "WARNING"
+                
+                # Fallback: Try to generate SPNEGO token using HTTP request method
+                try {
+                    Write-Log "Fallback Method: Using HTTP request to capture SPNEGO token..." -Level "INFO"
+                    
+                    # Create HTTP request to trigger SPNEGO negotiation
+                    $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+                    $request.Method = "POST"
+                    $request.UseDefaultCredentials = $true
+                    $request.PreAuthenticate = $true
+                    $request.ContentType = "application/json"
+                    $request.Timeout = 10000
+                    
+                    # Add some headers that might trigger SPNEGO
+                    $request.Headers.Add("User-Agent", "Vault-gMSA-Client/1.0")
+                    
+                    # Try to make the request and capture the Authorization header
+                    try {
+                        $response = $request.GetResponse()
+                        Write-Log "Fallback HTTP request succeeded with status: $($response.StatusCode)" -Level "INFO"
+                        $response.Close()
+                    } catch {
+                        Write-Log "Fallback HTTP request failed (expected): $($_.Exception.Message)" -Level "INFO"
+                        
+                        # Check if we can extract SPNEGO token from the request
+                        if ($request.Headers["Authorization"]) {
+                            $authHeader = $request.Headers["Authorization"]
+                            if ($authHeader -like "Negotiate *") {
+                                $spnegoToken = $authHeader -replace "Negotiate ", ""
+                                Write-Log "SUCCESS: Captured SPNEGO token from fallback method!" -Level "SUCCESS"
+                                Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                return $spnegoToken
+                            }
+                        }
+                    }
+                } catch {
+                    Write-Log "Fallback method failed: $($_.Exception.Message)" -Level "WARNING"
+                }
                 
                 [SSPI]::FreeCredentialsHandle([ref]$credHandle)
                 return $null
@@ -808,7 +892,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.6 (Enhanced gMSA Debugging)" -Level "INFO"
+        Write-Log "Script version: 3.7 (Multi-Method Credential Acquisition)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
