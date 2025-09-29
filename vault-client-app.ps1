@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.5 (Fixed klist syntax)" -Level "INFO"
+Write-Log "Script version: 3.6 (Enhanced gMSA Debugging)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -315,6 +315,56 @@ function Get-SPNEGOTokenPInvoke {
         # Generate real SPNEGO token using Win32 SSPI APIs
         Write-Log "Generating real SPNEGO token using Win32 SSPI APIs..." -Level "INFO"
         
+        # Enhanced debugging for gMSA context
+        Write-Log "=== DEBUGGING gMSA CONTEXT ===" -Level "INFO"
+        Write-Log "Current user: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)" -Level "INFO"
+        Write-Log "Current user type: $([System.Security.Principal.WindowsIdentity]::GetCurrent().AuthenticationType)" -Level "INFO"
+        Write-Log "Is authenticated: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsAuthenticated)" -Level "INFO"
+        Write-Log "Is guest: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsGuest)" -Level "INFO"
+        Write-Log "Is system: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsSystem)" -Level "INFO"
+        Write-Log "Is anonymous: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsAnonymous)" -Level "INFO"
+        
+        # Check available credentials
+        Write-Log "Checking available credentials..." -Level "INFO"
+        try {
+            $defaultCreds = [System.Net.CredentialCache]::DefaultCredentials
+            if ($defaultCreds) {
+                Write-Log "Default credentials available: $($defaultCreds.GetType().Name)" -Level "INFO"
+                Write-Log "Default credentials domain: $($defaultCreds.Domain)" -Level "INFO"
+                Write-Log "Default credentials username: $($defaultCreds.UserName)" -Level "INFO"
+            } else {
+                Write-Log "No default credentials available" -Level "WARNING"
+            }
+        } catch {
+            Write-Log "Error checking default credentials: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Check Kerberos ticket cache in detail
+        Write-Log "=== DETAILED KERBEROS TICKET ANALYSIS ===" -Level "INFO"
+        try {
+            $detailedKlist = klist 2>&1
+            Write-Log "Full klist output:" -Level "INFO"
+            $detailedKlist | ForEach-Object { Write-Log "  $_" -Level "INFO" }
+            
+            # Check for specific SPN
+            if ($detailedKlist -match $TargetSPN) {
+                Write-Log "SUCCESS: Found ticket for target SPN: $TargetSPN" -Level "SUCCESS"
+            } else {
+                Write-Log "WARNING: No ticket found for target SPN: $TargetSPN" -Level "WARNING"
+                
+                # Check for any HTTP tickets
+                $httpTickets = $detailedKlist | Where-Object { $_ -match "HTTP/" }
+                if ($httpTickets) {
+                    Write-Log "Found HTTP tickets:" -Level "INFO"
+                    $httpTickets | ForEach-Object { Write-Log "  $_" -Level "INFO" }
+                } else {
+                    Write-Log "No HTTP tickets found in cache" -Level "WARNING"
+                }
+            }
+        } catch {
+            Write-Log "Error analyzing Kerberos tickets: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
         try {
             # Step 1: Acquire credentials handle
             Write-Log "Step 1: Acquiring credentials handle..." -Level "INFO"
@@ -343,10 +393,17 @@ function Get-SPNEGOTokenPInvoke {
             
             # Step 2: Initialize security context
             Write-Log "Step 2: Initializing security context..." -Level "INFO"
+            Write-Log "Target SPN: $TargetSPN" -Level "INFO"
+            Write-Log "Credential handle: Lower=$($credHandle.dwLower), Upper=$($credHandle.dwUpper)" -Level "INFO"
             
             $contextHandle = New-Object SSPI+SECURITY_HANDLE
             $outputBuffer = New-Object SSPI+SEC_BUFFER
             $contextAttr = 0
+            
+            Write-Log "Calling InitializeSecurityContext with parameters:" -Level "INFO"
+            Write-Log "  - Target SPN: $TargetSPN" -Level "INFO"
+            Write-Log "  - Context requirements: 0x$(([SSPI]::ISC_REQ_CONFIDENTIALITY -bor [SSPI]::ISC_REQ_INTEGRITY -bor [SSPI]::ISC_REQ_MUTUAL_AUTH).ToString('X8'))" -Level "INFO"
+            Write-Log "  - Target data representation: $([SSPI]::SECURITY_NETWORK_DREP)" -Level "INFO"
             
             $result = [SSPI]::InitializeSecurityContext(
                 [ref]$credHandle,                       # Credential handle
@@ -362,6 +419,13 @@ function Get-SPNEGOTokenPInvoke {
                 [ref]$contextAttr,                      # Context attributes
                 [ref]$expiry                            # Expiry
             )
+            
+            Write-Log "InitializeSecurityContext result: 0x$($result.ToString('X8'))" -Level "INFO"
+            Write-Log "Context handle: Lower=$($contextHandle.dwLower), Upper=$($contextHandle.dwUpper)" -Level "INFO"
+            Write-Log "Output buffer size: $($outputBuffer.cbBuffer) bytes" -Level "INFO"
+            Write-Log "Output buffer type: $($outputBuffer.BufferType)" -Level "INFO"
+            Write-Log "Output buffer pointer: $($outputBuffer.pvBuffer)" -Level "INFO"
+            Write-Log "Context attributes: 0x$($contextAttr.ToString('X8'))" -Level "INFO"
             
             if ($result -ne [SSPI]::SEC_E_OK -and $result -ne [SSPI]::SEC_I_CONTINUE_NEEDED) {
                 Write-Log "ERROR: InitializeSecurityContext failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
@@ -744,7 +808,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.5 (Fixed klist syntax)" -Level "INFO"
+        Write-Log "Script version: 3.6 (Enhanced gMSA Debugging)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
