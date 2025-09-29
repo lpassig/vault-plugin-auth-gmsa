@@ -264,9 +264,12 @@ public class SSPIHelper
         IntPtr pInput,
         int Reserved2,
         ref SECURITY_HANDLE phNewContext,
-        ref SEC_BUFFER pOutput,
+        ref SEC_BUFFER_DESC pOutput,
         out int pfContextAttr,
         ref SECURITY_INTEGER ptsExpiry);
+
+    [DllImport("secur32.dll")]
+    public static extern int FreeCredentialsHandle(ref SECURITY_HANDLE phCredential);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct SECURITY_HANDLE
@@ -283,6 +286,14 @@ public class SSPIHelper
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct SEC_BUFFER_DESC
+    {
+        public uint ulVersion;
+        public uint cBuffers;
+        public IntPtr pBuffers;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct SEC_BUFFER
     {
         public uint cbBuffer;
@@ -295,6 +306,8 @@ public class SSPIHelper
     public const int ISC_REQ_INTEGRITY = 0x00010000;
     public const int ISC_REQ_MUTUAL_AUTH = 0x00000002;
     public const int SECURITY_NATIVE_DREP = 0x00000010;
+    public const int SECBUFFER_TOKEN = 2;
+    public const int SEC_I_CONTINUE_NEEDED = 0x90312;
 }
 "@
         
@@ -318,7 +331,28 @@ public class SSPIHelper
                 $credHandle = New-Object SSPIHelper+SECURITY_HANDLE
                 $contextHandle = New-Object SSPIHelper+SECURITY_HANDLE
                 $expiry = New-Object SSPIHelper+SECURITY_INTEGER
-                $output = New-Object SSPIHelper+SEC_BUFFER
+                
+                # Create output buffer descriptor
+                $outputBufferDesc = New-Object SSPIHelper+SEC_BUFFER_DESC
+                $outputBufferDesc.ulVersion = 0
+                $outputBufferDesc.cBuffers = 1
+                
+                # Create output buffer
+                $outputBuffer = New-Object SSPIHelper+SEC_BUFFER
+                $outputBuffer.cbBuffer = 0
+                $outputBuffer.BufferType = [SSPIHelper]::SECBUFFER_TOKEN
+                $outputBuffer.pvBuffer = [IntPtr]::Zero
+                
+                # Allocate memory for output buffer
+                $bufferSize = 4096
+                $bufferPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
+                $outputBuffer.cbBuffer = $bufferSize
+                $outputBuffer.pvBuffer = $bufferPtr
+                
+                # Set the buffer pointer in the descriptor
+                $bufferDescPtr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([System.Runtime.InteropServices.Marshal]::SizeOf($outputBuffer))
+                [System.Runtime.InteropServices.Marshal]::StructureToPtr($outputBuffer, $bufferDescPtr, $false)
+                $outputBufferDesc.pBuffers = $bufferDescPtr
                 
                 # Acquire credentials
                 $result = [SSPIHelper]::AcquireCredentialsHandle(
@@ -342,30 +376,60 @@ public class SSPIHelper
                         [ref]$credHandle,
                         [IntPtr]::Zero,
                         $spn,
-                        [SSPIHelper]::ISC_REQ_CONFIDENTIALITY -bor [SSPIHelper]::ISC_REQ_INTEGRITY -bor [SSPIHelper]::ISC_REQ_MUTUAL_AUTH,
+                        [SSPIHelper]::ISC_REQ_CONFIDENTIALITY -bor [SSPIHelper]::ISC_REQ_INTEGRITY,
                         0,
                         [SSPIHelper]::SECURITY_NATIVE_DREP,
                         [IntPtr]::Zero,
                         0,
                         [ref]$contextHandle,
-                        [ref]$output,
+                        [ref]$outputBufferDesc,
                         [out]$contextAttr,
                         [ref]$expiry
                     )
                     
-                    if ($result -eq 0) {
+                    if ($result -eq 0 -or $result -eq [SSPIHelper]::SEC_I_CONTINUE_NEEDED) {
                         Write-Log "SPNEGO token generated successfully for SPN: $spn"
+                        
                         # Extract token from output buffer
-                        $tokenBytes = New-Object byte[] $output.cbBuffer
-                        Marshal.Copy($output.pvBuffer, $tokenBytes, 0, $output.cbBuffer)
-                        $spnegoToken = [System.Convert]::ToBase64String($tokenBytes)
-                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
-                        return $spnegoToken
+                        if ($outputBuffer.cbBuffer -gt 0) {
+                            $tokenBytes = New-Object byte[] $outputBuffer.cbBuffer
+                            [System.Runtime.InteropServices.Marshal]::Copy($outputBuffer.pvBuffer, $tokenBytes, 0, $outputBuffer.cbBuffer)
+                            $spnegoToken = [System.Convert]::ToBase64String($tokenBytes)
+                            Write-Log "Real SPNEGO token generated successfully"
+                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..."
+                            
+                            # Clean up
+                            [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferPtr)
+                            [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferDescPtr)
+                            [SSPIHelper]::FreeCredentialsHandle([ref]$credHandle)
+                            
+                            return $spnegoToken
+                        } else {
+                            Write-Log "No token data in output buffer" -Level "WARNING"
+                        }
                     } else {
                         Write-Log "Failed to initialize security context for SPN '$spn': 0x$($result.ToString('X8'))" -Level "WARNING"
+                        
+                        # Decode common error codes
+                        switch ($result) {
+                            0x80090308 { Write-Log "Error: SEC_E_TARGET_UNKNOWN - Target SPN not found" -Level "WARNING" }
+                            0x8009030C { Write-Log "Error: SEC_E_UNKNOWN_CREDENTIALS - Unknown credentials" -Level "WARNING" }
+                            0x8009030D { Write-Log "Error: SEC_E_NO_CREDENTIALS - No credentials available" -Level "WARNING" }
+                            default { Write-Log "Error: Unknown SSPI error code 0x$($result.ToString('X8'))" -Level "WARNING" }
+                        }
                     }
+                    
+                    # Clean up
+                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferPtr)
+                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferDescPtr)
+                    [SSPIHelper]::FreeCredentialsHandle([ref]$credHandle)
+                    
                 } else {
                     Write-Log "Failed to acquire credentials for SPN '$spn': 0x$($result.ToString('X8'))" -Level "WARNING"
+                    
+                    # Clean up
+                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferPtr)
+                    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bufferDescPtr)
                 }
                 
             } catch {
