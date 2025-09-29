@@ -536,9 +536,9 @@ function Get-SPNEGOTokenPInvoke {
                 Write-Log "Request body: $body" -Level "INFO"
                 
                 # Make the request with Windows authentication
-                # Skip SSL certificate validation for testing
+                # Skip SSL certificate validation for testing (PowerShell 5.1 compatible)
                 try {
-                    $response = Invoke-WebRequest -Uri $requestUrl -Method POST -Body $body -ContentType "application/json" -UseDefaultCredentials -TimeoutSec 10 -SkipCertificateCheck -ErrorAction Stop
+                    $response = Invoke-WebRequest -Uri $requestUrl -Method POST -Body $body -ContentType "application/json" -UseDefaultCredentials -TimeoutSec 10 -ErrorAction Stop
                     
                     Write-Log "Request completed successfully with status: $($response.StatusCode)" -Level "INFO"
                     
@@ -585,23 +585,28 @@ function Get-SPNEGOTokenPInvoke {
             
             try {
                 $response = $client.PostAsync("$VaultUrl/v1/auth/gmsa/login", $content).Result
-                Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
                 
-                # Check if Authorization header was added
-                if ($response.RequestMessage.Headers.Contains("Authorization")) {
-                    $authHeader = $response.RequestMessage.Headers.GetValues("Authorization")
-                    if ($authHeader -and $authHeader[0] -like "Negotiate *") {
-                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
-                        Write-Log "Real SPNEGO token extracted from HttpClient Authorization header" -Level "SUCCESS"
-                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-                        $client.Dispose()
-                        return $spnegoToken
+                if ($response -ne $null) {
+                    Write-Log "HttpClient request completed with status: $($response.StatusCode)" -Level "INFO"
+                    
+                    # Check if Authorization header was added
+                    if ($response.RequestMessage -ne $null -and $response.RequestMessage.Headers.Contains("Authorization")) {
+                        $authHeader = $response.RequestMessage.Headers.GetValues("Authorization")
+                        if ($authHeader -ne $null -and $authHeader.Count -gt 0 -and $authHeader[0] -like "Negotiate *") {
+                            $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                            Write-Log "Real SPNEGO token extracted from HttpClient Authorization header" -Level "SUCCESS"
+                            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                            $client.Dispose()
+                            return $spnegoToken
+                        }
                     }
+                    
+                    $response.Dispose()
+                } else {
+                    Write-Log "HttpClient response is null" -Level "WARNING"
                 }
-                
-                $response.Dispose()
             } catch {
-                if ($_.Exception.InnerException -and $_.Exception.InnerException.Response) {
+                if ($_.Exception.InnerException -ne $null -and $_.Exception.InnerException.Response -ne $null) {
                     $statusCode = $_.Exception.InnerException.Response.StatusCode
                     Write-Log "HttpClient request returned: $statusCode" -Level "INFO"
                     
@@ -615,65 +620,105 @@ function Get-SPNEGOTokenPInvoke {
             
             $client.Dispose()
             
-            # Method 3: Advanced SPNEGO token capture using HttpWebRequest
-            Write-Log "Trying advanced SPNEGO token capture method..." -Level "INFO"
+            # Method 3: Proper SPNEGO negotiation flow
+            Write-Log "Trying proper SPNEGO negotiation flow..." -Level "INFO"
             
             try {
-                # Create HttpWebRequest for better control
-                $httpRequest = [System.Net.HttpWebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
-                $httpRequest.Method = "POST"
-                $httpRequest.UseDefaultCredentials = $true
-                $httpRequest.PreAuthenticate = $true
-                $httpRequest.ContentType = "application/json"
-                $httpRequest.Timeout = 10000
-                $httpRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                # Step 1: Make initial request without credentials to get 401 challenge
+                Write-Log "Step 1: Making initial request to trigger 401 challenge..." -Level "INFO"
+                
+                $initialRequest = [System.Net.HttpWebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+                $initialRequest.Method = "POST"
+                $initialRequest.ContentType = "application/json"
+                $initialRequest.Timeout = 10000
+                $initialRequest.UserAgent = "Vault-gMSA-Client/1.0"
                 
                 # Add request body
                 $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes('{"role":"vault-gmsa-role"}')
-                $httpRequest.ContentLength = $bodyBytes.Length
+                $initialRequest.ContentLength = $bodyBytes.Length
                 
-                # Write request body
-                $requestStream = $httpRequest.GetRequestStream()
+                $requestStream = $initialRequest.GetRequestStream()
                 $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
                 $requestStream.Close()
                 
-                Write-Log "HttpWebRequest created, attempting to get response..." -Level "INFO"
-                
-                # Try to get the response
                 try {
-                    $httpResponse = $httpRequest.GetResponse()
-                    Write-Log "HttpWebRequest completed successfully with status: $($httpResponse.StatusCode)" -Level "INFO"
-                    $httpResponse.Close()
+                    $initialResponse = $initialRequest.GetResponse()
+                    Write-Log "Initial request completed with status: $($initialResponse.StatusCode)" -Level "INFO"
+                    $initialResponse.Close()
                 } catch {
                     $statusCode = $_.Exception.Response.StatusCode
-                    Write-Log "HttpWebRequest returned: $statusCode" -Level "INFO"
+                    Write-Log "Initial request returned: $statusCode" -Level "INFO"
                     
                     if ($statusCode -eq 401) {
-                        Write-Log "SUCCESS: 401 Unauthorized - Windows authentication triggered" -Level "SUCCESS"
+                        Write-Log "SUCCESS: Got 401 challenge - checking for WWW-Authenticate header" -Level "SUCCESS"
+                        
+                        # Check for WWW-Authenticate: Negotiate header
+                        $response = $_.Exception.Response
+                        if ($response.Headers["WWW-Authenticate"] -like "*Negotiate*") {
+                            Write-Log "SUCCESS: Found WWW-Authenticate: Negotiate header" -Level "SUCCESS"
+                            
+                            # Step 2: Make authenticated request with Windows credentials
+                            Write-Log "Step 2: Making authenticated request with Windows credentials..." -Level "INFO"
+                            
+                            $authRequest = [System.Net.HttpWebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+                            $authRequest.Method = "POST"
+                            $authRequest.UseDefaultCredentials = $true
+                            $authRequest.PreAuthenticate = $true
+                            $authRequest.ContentType = "application/json"
+                            $authRequest.Timeout = 10000
+                            $authRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                            
+                            $authRequest.ContentLength = $bodyBytes.Length
+                            
+                            $authStream = $authRequest.GetRequestStream()
+                            $authStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                            $authStream.Close()
+                            
+                            try {
+                                $authResponse = $authRequest.GetResponse()
+                                Write-Log "Authenticated request completed with status: $($authResponse.StatusCode)" -Level "INFO"
+                                
+                                # Check if we got a successful response
+                                if ($authResponse.StatusCode -eq 200) {
+                                    Write-Log "SUCCESS: Authentication successful!" -Level "SUCCESS"
+                                    $responseStream = $authResponse.GetResponseStream()
+                                    $reader = New-Object System.IO.StreamReader($responseStream)
+                                    $responseContent = $reader.ReadToEnd()
+                                    $reader.Close()
+                                    $responseStream.Close()
+                                    $authResponse.Close()
+                                    
+                                    $authData = $responseContent | ConvertFrom-Json
+                                    if ($authData.auth -and $authData.auth.client_token) {
+                                        Write-Log "SUCCESS: Direct Vault token obtained!" -Level "SUCCESS"
+                                        return $authData.auth.client_token
+                                    }
+                                }
+                                $authResponse.Close()
+                            } catch {
+                                $authStatusCode = $_.Exception.Response.StatusCode
+                                Write-Log "Authenticated request returned: $authStatusCode" -Level "INFO"
+                                
+                                # Check if Authorization header was added
+                                if ($authRequest.Headers.Contains("Authorization")) {
+                                    $authHeader = $authRequest.Headers.GetValues("Authorization")
+                                    if ($authHeader -ne $null -and $authHeader.Count -gt 0 -and $authHeader[0] -like "Negotiate *") {
+                                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                                        Write-Log "SUCCESS: Real SPNEGO token captured!" -Level "SUCCESS"
+                                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                                        return $spnegoToken
+                                    }
+                                }
+                            }
+                        } else {
+                            Write-Log "WARNING: No WWW-Authenticate: Negotiate header found" -Level "WARNING"
+                            Write-Log "WWW-Authenticate header: $($response.Headers['WWW-Authenticate'])" -Level "INFO"
+                        }
                     }
-                }
-                
-                # Check if Authorization header was added to the request
-                Write-Log "Checking for Authorization header in HttpWebRequest..." -Level "INFO"
-                Write-Log "Request headers count: $($httpRequest.Headers.Count)" -Level "INFO"
-                
-                if ($httpRequest.Headers.Contains("Authorization")) {
-                    $authHeader = $httpRequest.Headers.GetValues("Authorization")
-                    Write-Log "Authorization header found: $($authHeader[0].Substring(0, [Math]::Min(50, $authHeader[0].Length)))..." -Level "INFO"
-                    
-                    if ($authHeader -and $authHeader[0] -like "Negotiate *") {
-                        $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
-                        Write-Log "SUCCESS: Real SPNEGO token captured from HttpWebRequest!" -Level "SUCCESS"
-                        Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-                        return $spnegoToken
-                    }
-                } else {
-                    Write-Log "No Authorization header found in HttpWebRequest" -Level "WARNING"
-                    Write-Log "Available headers: $($httpRequest.Headers.AllKeys -join ', ')" -Level "INFO"
                 }
                 
             } catch {
-                Write-Log "Advanced SPNEGO capture method failed: $($_.Exception.Message)" -Level "WARNING"
+                Write-Log "SPNEGO negotiation flow failed: $($_.Exception.Message)" -Level "WARNING"
             }
             
             # Method 4: Since we have a valid Kerberos ticket, let's try a different approach
