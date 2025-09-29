@@ -175,13 +175,23 @@ function Copy-ApplicationScript {
         # Always overwrite with current directory script
         Write-Host "🔄 Overwriting scheduled task script with current directory version..." -ForegroundColor Yellow
         Copy-Item $sourceScript $targetScript -Force
-        Write-Host "✅ Application script updated: $targetScript" -ForegroundColor Green
         
-        # Update scheduled task to use the new script
-        Write-Host "Updating scheduled task to use new script..." -ForegroundColor Yellow
-        Update-ScheduledTaskScript -TaskName $TaskName -ScriptPath $targetScript
-        
-        return $targetScript
+        # Verify the copy worked
+        if (Test-Path $targetScript) {
+            $copiedContent = Get-Content $targetScript -Raw
+            $copiedVersion = if ($copiedContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
+            Write-Host "✅ Application script updated: $targetScript" -ForegroundColor Green
+            Write-Host "✅ Copied script version: $copiedVersion" -ForegroundColor Green
+            
+            # Update scheduled task to use the new script
+            Write-Host "Updating scheduled task to use new script..." -ForegroundColor Yellow
+            Update-ScheduledTaskScript -TaskName $TaskName -ScriptPath $targetScript
+            
+            return $targetScript
+        } else {
+            Write-Host "❌ Failed to copy script to: $targetScript" -ForegroundColor Red
+            return $null
+        }
     } else {
         Write-Host "❌ Source script not found: $sourceScript" -ForegroundColor Red
         Write-Host "Make sure vault-client-app.ps1 is in the current directory" -ForegroundColor Yellow
@@ -216,6 +226,16 @@ function Update-ScheduledTaskScript {
             Set-ScheduledTask -TaskName $TaskName -Action $newAction -Trigger $currentTrigger -Settings $currentSettings -Principal $currentPrincipal
             
             Write-Host "✅ Scheduled task updated with new script path" -ForegroundColor Green
+            Write-Host "   Script path: $ScriptPath" -ForegroundColor Cyan
+            
+            # Verify the update worked
+            $updatedTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+            if ($updatedTask) {
+                $updatedAction = $updatedTask.Actions[0]
+                Write-Host "✅ Verified scheduled task update successful" -ForegroundColor Green
+                Write-Host "   Task arguments: $($updatedAction.Arguments)" -ForegroundColor Cyan
+            }
+            
             return $true
         } else {
             Write-Host "⚠️ Scheduled task not found, will be created during setup" -ForegroundColor Yellow
@@ -381,6 +401,15 @@ function Test-Setup {
         # Check if script exists
         if (Test-Path $ScriptPath) {
             Write-Host "✅ Application script exists: $ScriptPath" -ForegroundColor Green
+            
+            # Verify script version
+            $scriptContent = Get-Content $ScriptPath -Raw
+            $scriptVersion = if ($scriptContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
+            Write-Host "   - Script version: $scriptVersion" -ForegroundColor Cyan
+            
+            # Check script size
+            $scriptSize = (Get-Item $ScriptPath).Length
+            Write-Host "   - Script size: $scriptSize bytes" -ForegroundColor Cyan
         } else {
             Write-Host "❌ Application script not found: $ScriptPath" -ForegroundColor Red
             return $false
@@ -402,7 +431,29 @@ function Test-Setup {
             Write-Host "✅ Scheduled task test initiated successfully" -ForegroundColor Green
             Write-Host "   - Task State: $($taskInfo.State)" -ForegroundColor Cyan
             Write-Host "   - Last Run: $($taskInfo.LastRunTime)" -ForegroundColor Cyan
-            Write-Host "   - Check logs at: $ConfigOutputDir\vault-client.log" -ForegroundColor Cyan
+            Write-Host "   - Last Result: $($taskInfo.LastTaskResult)" -ForegroundColor Cyan
+            Write-Host "   - Check logs at: C:\vault-client\config\vault-client.log" -ForegroundColor Cyan
+            
+            # Check if log file was created
+            $logFile = "C:\vault-client\config\vault-client.log"
+            if (Test-Path $logFile) {
+                Write-Host "✅ Log file exists: $logFile" -ForegroundColor Green
+                $logSize = (Get-Item $logFile).Length
+                Write-Host "   - Log file size: $logSize bytes" -ForegroundColor Cyan
+                
+                # Show last few lines of log
+                try {
+                    $lastLines = Get-Content $logFile -Tail 5 -ErrorAction SilentlyContinue
+                    if ($lastLines) {
+                        Write-Host "   - Recent log entries:" -ForegroundColor Cyan
+                        $lastLines | ForEach-Object { Write-Host "     $_" -ForegroundColor Gray }
+                    }
+                } catch {
+                    Write-Host "   - Could not read log file" -ForegroundColor Yellow
+                }
+            } else {
+                Write-Host "⚠️ Log file not found: $logFile" -ForegroundColor Yellow
+            }
         } else {
             Write-Host "⚠️ Could not verify scheduled task execution" -ForegroundColor Yellow
         }
