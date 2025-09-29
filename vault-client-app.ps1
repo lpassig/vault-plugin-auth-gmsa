@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.8 (Multi-Context Requirements + Fixed Fallback)" -Level "INFO"
+Write-Log "Script version: 3.9 (HttpClient Alternative Method)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -514,45 +514,79 @@ function Get-SPNEGOTokenPInvoke {
                 Write-Log "5. Check domain controller connectivity from Linux" -Level "ERROR"
                 Write-Log "6. Verify gMSA account is properly configured" -Level "ERROR"
                 
-                Write-Log "Attempting fallback SPNEGO generation method..." -Level "WARNING"
+                Write-Log "Attempting alternative SPNEGO generation method..." -Level "WARNING"
                 
-                # Fallback: Try to generate SPNEGO token using HTTP request method
+                # Alternative Method: Use HttpClient with UseDefaultCredentials to capture SPNEGO token
                 try {
-                    Write-Log "Fallback Method: Using HTTP request to capture SPNEGO token..." -Level "INFO"
+                    Write-Log "Alternative Method: Using HttpClient to capture SPNEGO token..." -Level "INFO"
                     
-                    # Create HTTP request to trigger SPNEGO negotiation
-                    $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
-                    $request.Method = "POST"
-                    $request.UseDefaultCredentials = $true
-                    $request.PreAuthenticate = $true
-                    $request.ContentType = "application/json"
-                    $request.Timeout = 10000
+                    # Create HttpClient with default credentials
+                    $httpClientHandler = New-Object System.Net.Http.HttpClientHandler
+                    $httpClientHandler.UseDefaultCredentials = $true
+                    $httpClientHandler.ServerCertificateCustomValidationCallback = {$true}
                     
-                    # Add some headers that might trigger SPNEGO
-                    $request.UserAgent = "Vault-gMSA-Client/1.0"
+                    $httpClient = New-Object System.Net.Http.HttpClient($httpClientHandler)
+                    $httpClient.Timeout = [TimeSpan]::FromSeconds(10)
                     
-                    # Try to make the request and capture the Authorization header
+                    # Create a request that will trigger SPNEGO negotiation
+                    $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, "$VaultUrl/v1/auth/gmsa/login")
+                    $request.Headers.Add("User-Agent", "Vault-gMSA-Client/1.0")
+                    $request.Content = New-Object System.Net.Http.StringContent('{"role":"test","spnego":"test"}', [System.Text.Encoding]::UTF8, "application/json")
+                    
                     try {
-                        $response = $request.GetResponse()
-                        Write-Log "Fallback HTTP request succeeded with status: $($response.StatusCode)" -Level "INFO"
-                        $response.Close()
-                    } catch {
-                        Write-Log "Fallback HTTP request failed (expected): $($_.Exception.Message)" -Level "INFO"
+                        $response = $httpClient.SendAsync($request).Result
+                        Write-Log "Alternative HTTP request completed with status: $($response.StatusCode)" -Level "INFO"
                         
-                        # Check if we can extract SPNEGO token from the request
-                        if ($request.Headers["Authorization"]) {
-                            $authHeader = $request.Headers["Authorization"]
-                            if ($authHeader -like "Negotiate *") {
-                                $spnegoToken = $authHeader -replace "Negotiate ", ""
-                                Write-Log "SUCCESS: Captured SPNEGO token from fallback method!" -Level "SUCCESS"
-                                Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                        # Check if the request contains Authorization header
+                        if ($request.Headers.Authorization) {
+                            $authScheme = $request.Headers.Authorization.Scheme
+                            $authParameter = $request.Headers.Authorization.Parameter
+                            
+                            if ($authScheme -eq "Negotiate" -and $authParameter) {
+                                Write-Log "SUCCESS: Captured SPNEGO token from alternative method!" -Level "SUCCESS"
+                                Write-Log "Token length: $($authParameter.Length) characters" -Level "INFO"
                                 [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                return $spnegoToken
+                                $httpClient.Dispose()
+                                return $authParameter
+                            }
+                        }
+                        
+                        $response.Dispose()
+                    } catch {
+                        Write-Log "Alternative HTTP request failed: $($_.Exception.Message)" -Level "INFO"
+                        
+                        # Check if the request contains Authorization header even after failure
+                        if ($request.Headers.Authorization) {
+                            $authScheme = $request.Headers.Authorization.Scheme
+                            $authParameter = $request.Headers.Authorization.Parameter
+                            
+                            if ($authScheme -eq "Negotiate" -and $authParameter) {
+                                Write-Log "SUCCESS: Captured SPNEGO token from alternative method (after failure)!" -Level "SUCCESS"
+                                Write-Log "Token length: $($authParameter.Length) characters" -Level "INFO"
+                                [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+                                $httpClient.Dispose()
+                                return $authParameter
                             }
                         }
                     }
+                    
+                    $httpClient.Dispose()
                 } catch {
-                    Write-Log "Fallback method failed: $($_.Exception.Message)" -Level "WARNING"
+                    Write-Log "Alternative method failed: $($_.Exception.Message)" -Level "WARNING"
+                }
+                
+                # Final Alternative: Try using the existing Kerberos ticket directly
+                try {
+                    Write-Log "Final Alternative: Attempting to extract token from existing Kerberos ticket..." -Level "INFO"
+                    
+                    # Since we have a valid Kerberos ticket, try to use it directly
+                    # This is a more advanced approach that might work
+                    Write-Log "Attempting direct Kerberos ticket usage..." -Level "INFO"
+                    
+                    # For now, we'll return null and let the caller handle it
+                    Write-Log "Direct Kerberos ticket usage not implemented yet" -Level "WARNING"
+                } catch {
+                    Write-Log "Final alternative method failed: $($_.Exception.Message)" -Level "WARNING"
                 }
                 
                 [SSPI]::FreeCredentialsHandle([ref]$credHandle)
@@ -909,7 +943,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.8 (Multi-Context Requirements + Fixed Fallback)" -Level "INFO"
+        Write-Log "Script version: 3.9 (HttpClient Alternative Method)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
