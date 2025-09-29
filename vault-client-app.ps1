@@ -320,7 +320,10 @@ function Get-SPNEGOTokenPInvoke {
                     0x80090308 { 
                         Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR"
                         Write-Log "CRITICAL: The SPN '$TargetSPN' is not registered in Active Directory" -Level "ERROR"
-                        Write-Log "SOLUTION: Register the SPN using: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
+                        Write-Log "SOLUTION: Register the SPN for the Linux Vault server:" -Level "ERROR"
+                        Write-Log "  Windows: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
+                        Write-Log "  Linux: ktutil -k /path/to/vault.keytab add_entry -p $TargetSPN -e aes256-cts-hmac-sha1-96 -w password" -Level "ERROR"
+                        Write-Log "  Or use: setspn -A $TargetSPN <linux-hostname>" -Level "ERROR"
                     }
                     0x8009030E { Write-Log "ERROR: SEC_E_NO_CREDENTIALS - No credentials available" -Level "ERROR" }
                     0x8009030F { Write-Log "ERROR: SEC_E_NO_AUTHENTICATING_AUTHORITY - Cannot contact domain controller" -Level "ERROR" }
@@ -328,12 +331,13 @@ function Get-SPNEGOTokenPInvoke {
                     default { Write-Log "ERROR: Unknown SSPI error code: 0x$($result.ToString('X8'))" -Level "ERROR" }
                 }
                 
-                Write-Log "Troubleshooting steps:" -Level "ERROR"
-                Write-Log "1. Register SPN: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
-                Write-Log "2. Verify SPN exists: setspn -L vault-gmsa" -Level "ERROR"
-                Write-Log "3. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
-                Write-Log "4. Check domain controller connectivity" -Level "ERROR"
-                Write-Log "5. Verify gMSA account is properly configured" -Level "ERROR"
+                Write-Log "Troubleshooting steps for Linux Vault server:" -Level "ERROR"
+                Write-Log "1. Register SPN for Linux host: setspn -A $TargetSPN <linux-hostname>" -Level "ERROR"
+                Write-Log "2. Or register for gMSA: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
+                Write-Log "3. Verify SPN exists: setspn -L <linux-hostname> or setspn -L vault-gmsa" -Level "ERROR"
+                Write-Log "4. Ensure Linux Vault server has proper keytab with SPN" -Level "ERROR"
+                Write-Log "5. Check domain controller connectivity from Linux" -Level "ERROR"
+                Write-Log "6. Verify gMSA account is properly configured" -Level "ERROR"
                 
                 [SSPI]::FreeCredentialsHandle([ref]$credHandle)
                 return $null
