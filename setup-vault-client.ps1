@@ -29,7 +29,7 @@ function Test-ScriptUpdates {
     $targetScript = "$ScriptsDir\vault-client-app.ps1"
     
     if (-not (Test-Path $sourceScript)) {
-        Write-Host "❌ Source script not found: $sourceScript" -ForegroundColor Red
+        Write-Host "ERROR: Source script not found: $sourceScript" -ForegroundColor Red
         return $false
     }
     
@@ -51,11 +51,11 @@ function Test-ScriptUpdates {
     Write-Host "Target script version: $targetVersion" -ForegroundColor Cyan
     
     if ($sourceVersion -eq $targetVersion -and $sourceVersion -ne "unknown") {
-        Write-Host "✅ Script versions match, no update needed" -ForegroundColor Green
+        Write-Host "SUCCESS: Script versions match, no update needed" -ForegroundColor Green
         Write-Host "Note: Run setup again to force overwrite with current directory version" -ForegroundColor Cyan
         return $false
     } else {
-        Write-Host "⚠️ Script versions differ, update available!" -ForegroundColor Yellow
+        Write-Host "WARNING: Script versions differ, update available!" -ForegroundColor Yellow
         Write-Host "Run: .\setup-vault-client.ps1" -ForegroundColor Cyan
         Write-Host "The setup script will always overwrite with the current directory version" -ForegroundColor Cyan
         return $true
@@ -71,23 +71,23 @@ function Test-Prerequisites {
     
     # Check if running as Administrator
     if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-        Write-Host "❌ This script must be run as Administrator" -ForegroundColor Red
+        Write-Host "ERROR: This script must be run as Administrator" -ForegroundColor Red
         return $false
     }
-    Write-Host "✅ Running as Administrator" -ForegroundColor Green
+    Write-Host "SUCCESS: Running as Administrator" -ForegroundColor Green
     
     # Check if gMSA is installed
     try {
         Import-Module ActiveDirectory -ErrorAction Stop
         $gmsaTest = Test-ADServiceAccount -Identity "vault-gmsa" -ErrorAction Stop
         if ($gmsaTest) {
-            Write-Host "✅ gMSA 'vault-gmsa' is installed and working" -ForegroundColor Green
+            Write-Host "SUCCESS: gMSA 'vault-gmsa' is installed and working" -ForegroundColor Green
         } else {
-            Write-Host "❌ gMSA 'vault-gmsa' is not working properly" -ForegroundColor Red
+            Write-Host "ERROR: gMSA 'vault-gmsa' is not working properly" -ForegroundColor Red
             return $false
         }
     } catch {
-        Write-Host "❌ Cannot test gMSA: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "ERROR: Cannot test gMSA: $($_.Exception.Message)" -ForegroundColor Red
         Write-Host "Make sure RSAT Active Directory PowerShell module is installed" -ForegroundColor Yellow
         return $false
     }
@@ -97,13 +97,13 @@ function Test-Prerequisites {
         $vaultHost = ($VaultUrl -replace "https://", "" -replace "http://", "" -replace ":8200", "")
         $connection = Test-NetConnection -ComputerName $vaultHost -Port 8200 -WarningAction SilentlyContinue
         if ($connection.TcpTestSucceeded) {
-            Write-Host "✅ Vault server is reachable: $vaultHost:8200" -ForegroundColor Green
+            Write-Host "SUCCESS: Vault server is reachable: $vaultHost:8200" -ForegroundColor Green
         } else {
-            Write-Host "❌ Cannot reach Vault server: $vaultHost:8200" -ForegroundColor Red
+            Write-Host "ERROR: Cannot reach Vault server: $vaultHost:8200" -ForegroundColor Red
             return $false
         }
     } catch {
-        Write-Host "❌ Network connectivity test failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "ERROR: Network connectivity test failed: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
     
@@ -126,9 +126,9 @@ function New-ApplicationStructure {
     @($appDir, $configDir, $logsDir, $scriptsDir) | ForEach-Object {
         if (-not (Test-Path $_)) {
             New-Item -ItemType Directory -Path $_ -Force | Out-Null
-            Write-Host "✅ Created directory: $_" -ForegroundColor Green
+            Write-Host "SUCCESS: Created directory: $_" -ForegroundColor Green
         } else {
-            Write-Host "✅ Directory exists: $_" -ForegroundColor Green
+            Write-Host "SUCCESS: Directory exists: $_" -ForegroundColor Green
         }
     }
     
@@ -164,7 +164,7 @@ function Copy-ApplicationScript {
         if (Test-Path $targetScript) {
             $backupScript = "$targetScript.backup.$(Get-Date -Format 'yyyyMMdd-HHmmss')"
             Copy-Item $targetScript $backupScript -Force
-            Write-Host "✅ Created backup: $backupScript" -ForegroundColor Green
+            Write-Host "SUCCESS: Created backup: $backupScript" -ForegroundColor Green
             
             # Show target version for comparison
             $targetContent = Get-Content $targetScript -Raw
@@ -173,15 +173,15 @@ function Copy-ApplicationScript {
         }
         
         # Always overwrite with current directory script
-        Write-Host "🔄 Overwriting scheduled task script with current directory version..." -ForegroundColor Yellow
+        Write-Host "UPDATING: Overwriting scheduled task script with current directory version..." -ForegroundColor Yellow
         Copy-Item $sourceScript $targetScript -Force
         
         # Verify the copy worked
         if (Test-Path $targetScript) {
             $copiedContent = Get-Content $targetScript -Raw
             $copiedVersion = if ($copiedContent -match 'Script version:\s*([^\s]+)') { $matches[1] } else { "unknown" }
-            Write-Host "✅ Application script updated: $targetScript" -ForegroundColor Green
-            Write-Host "✅ Copied script version: $copiedVersion" -ForegroundColor Green
+            Write-Host "SUCCESS: Application script updated: $targetScript" -ForegroundColor Green
+            Write-Host "SUCCESS: Copied script version: $copiedVersion" -ForegroundColor Green
             
             # Update scheduled task to use the new script
             Write-Host "Updating scheduled task to use new script..." -ForegroundColor Yellow
@@ -189,11 +189,11 @@ function Copy-ApplicationScript {
             
             return $targetScript
         } else {
-            Write-Host "❌ Failed to copy script to: $targetScript" -ForegroundColor Red
+            Write-Host "ERROR: Failed to copy script to: $targetScript" -ForegroundColor Red
             return $null
         }
     } else {
-        Write-Host "❌ Source script not found: $sourceScript" -ForegroundColor Red
+        Write-Host "ERROR: Source script not found: $sourceScript" -ForegroundColor Red
         Write-Host "Make sure vault-client-app.ps1 is in the current directory" -ForegroundColor Yellow
         return $null
     }
@@ -225,24 +225,24 @@ function Update-ScheduledTaskScript {
             # Update the task
             Set-ScheduledTask -TaskName $TaskName -Action $newAction -Trigger $currentTrigger -Settings $currentSettings -Principal $currentPrincipal
             
-            Write-Host "✅ Scheduled task updated with new script path" -ForegroundColor Green
+            Write-Host "SUCCESS: Scheduled task updated with new script path" -ForegroundColor Green
             Write-Host "   Script path: $ScriptPath" -ForegroundColor Cyan
             
             # Verify the update worked
             $updatedTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
             if ($updatedTask) {
                 $updatedAction = $updatedTask.Actions[0]
-                Write-Host "✅ Verified scheduled task update successful" -ForegroundColor Green
+                Write-Host "SUCCESS: Verified scheduled task update successful" -ForegroundColor Green
                 Write-Host "   Task arguments: $($updatedAction.Arguments)" -ForegroundColor Cyan
             }
             
             return $true
         } else {
-            Write-Host "⚠️ Scheduled task not found, will be created during setup" -ForegroundColor Yellow
+            Write-Host "WARNING: Scheduled task not found, will be created during setup" -ForegroundColor Yellow
             return $false
         }
     } catch {
-        Write-Host "❌ Failed to update scheduled task: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "ERROR: Failed to update scheduled task: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -269,7 +269,7 @@ function New-VaultClientScheduledTask {
         $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($existingTask) {
             Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-            Write-Host "✅ Removed existing task: $TaskName" -ForegroundColor Green
+            Write-Host "SUCCESS: Removed existing task: $TaskName" -ForegroundColor Green
         }
         
         # Create action
@@ -302,12 +302,12 @@ function New-VaultClientScheduledTask {
         
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
         
-        Write-Host "✅ Scheduled task created successfully: $TaskName" -ForegroundColor Green
+        Write-Host "SUCCESS: Scheduled task created successfully: $TaskName" -ForegroundColor Green
         Write-Host "   - Identity: local.lab\vault-gmsa$" -ForegroundColor Cyan
         Write-Host "   - Schedule: $Schedule at $Time" -ForegroundColor Cyan
         Write-Host "   - Script: $ScriptPath" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "⚠️  IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -ForegroundColor Yellow
+        Write-Host "IMPORTANT: Ensure gMSA has 'Log on as a batch job' right:" -ForegroundColor Yellow
         Write-Host "   1. Run secpol.msc on this machine" -ForegroundColor Yellow
         Write-Host "   2. Navigate to: Local Policies → User Rights Assignment → Log on as a batch job" -ForegroundColor Yellow
         Write-Host "   3. Add: local.lab\vault-gmsa$" -ForegroundColor Yellow
@@ -316,7 +316,7 @@ function New-VaultClientScheduledTask {
         return $true
         
     } catch {
-        Write-Host "❌ Failed to create scheduled task: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "ERROR: Failed to create scheduled task: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -341,7 +341,7 @@ function New-ConfigurationFiles {
     }
     
     $config | ConvertTo-Json -Depth 3 | Out-File -FilePath "$ConfigDir\vault-client-config.json" -Encoding UTF8
-    Write-Host "✅ Configuration file created: $ConfigDir\vault-client-config.json" -ForegroundColor Green
+    Write-Host "SUCCESS: Configuration file created: $ConfigDir\vault-client-config.json" -ForegroundColor Green
     
     # Create example secrets in Vault (instructions)
     $vaultInstructions = @"
@@ -379,7 +379,7 @@ Identity: local.lab\vault-gmsa$
 "@
     
     $vaultInstructions | Out-File -FilePath "$ConfigDir\VAULT_SETUP_INSTRUCTIONS.txt" -Encoding UTF8
-    Write-Host "✅ Setup instructions created: $ConfigDir\VAULT_SETUP_INSTRUCTIONS.txt" -ForegroundColor Green
+    Write-Host "SUCCESS: Setup instructions created: $ConfigDir\VAULT_SETUP_INSTRUCTIONS.txt" -ForegroundColor Green
 }
 
 # =============================================================================
@@ -394,13 +394,13 @@ function Test-Setup {
     try {
         # Check if task exists
         $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        Write-Host "✅ Scheduled task exists: $($task.TaskName)" -ForegroundColor Green
+        Write-Host "SUCCESS: Scheduled task exists: $($task.TaskName)" -ForegroundColor Green
         Write-Host "   - State: $($task.State)" -ForegroundColor Cyan
         Write-Host "   - Principal: $($task.Principal.UserId)" -ForegroundColor Cyan
         
         # Check if script exists
         if (Test-Path $ScriptPath) {
-            Write-Host "✅ Application script exists: $ScriptPath" -ForegroundColor Green
+            Write-Host "SUCCESS: Application script exists: $ScriptPath" -ForegroundColor Green
             
             # Verify script version
             $scriptContent = Get-Content $ScriptPath -Raw
@@ -411,7 +411,7 @@ function Test-Setup {
             $scriptSize = (Get-Item $ScriptPath).Length
             Write-Host "   - Script size: $scriptSize bytes" -ForegroundColor Cyan
         } else {
-            Write-Host "❌ Application script not found: $ScriptPath" -ForegroundColor Red
+            Write-Host "ERROR: Application script not found: $ScriptPath" -ForegroundColor Red
             return $false
         }
         
@@ -428,7 +428,7 @@ function Test-Setup {
         # Check if the task is running
         $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($taskInfo) {
-            Write-Host "✅ Scheduled task test initiated successfully" -ForegroundColor Green
+            Write-Host "SUCCESS: Scheduled task test initiated successfully" -ForegroundColor Green
             Write-Host "   - Task State: $($taskInfo.State)" -ForegroundColor Cyan
             Write-Host "   - Last Run: $($taskInfo.LastRunTime)" -ForegroundColor Cyan
             Write-Host "   - Last Result: $($taskInfo.LastTaskResult)" -ForegroundColor Cyan
@@ -437,7 +437,7 @@ function Test-Setup {
             # Check if log file was created
             $logFile = "C:\vault-client\config\vault-client.log"
             if (Test-Path $logFile) {
-                Write-Host "✅ Log file exists: $logFile" -ForegroundColor Green
+                Write-Host "SUCCESS: Log file exists: $logFile" -ForegroundColor Green
                 $logSize = (Get-Item $logFile).Length
                 Write-Host "   - Log file size: $logSize bytes" -ForegroundColor Cyan
                 
@@ -452,16 +452,16 @@ function Test-Setup {
                     Write-Host "   - Could not read log file" -ForegroundColor Yellow
                 }
             } else {
-                Write-Host "⚠️ Log file not found: $logFile" -ForegroundColor Yellow
+                Write-Host "WARNING: Log file not found: $logFile" -ForegroundColor Yellow
             }
         } else {
-            Write-Host "⚠️ Could not verify scheduled task execution" -ForegroundColor Yellow
+            Write-Host "WARNING: Could not verify scheduled task execution" -ForegroundColor Yellow
         }
         
         return $true
         
     } catch {
-        Write-Host "❌ Setup test failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "ERROR: Setup test failed: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -494,7 +494,7 @@ function Start-Setup {
     
     # Step 1: Check prerequisites
     if (-not (Test-Prerequisites)) {
-        Write-Host "❌ Prerequisites check failed" -ForegroundColor Red
+        Write-Host "ERROR: Prerequisites check failed" -ForegroundColor Red
         exit 1
     }
     
@@ -504,7 +504,7 @@ function Start-Setup {
     # Step 3: Copy application script
     $scriptPath = Copy-ApplicationScript -ScriptsDir $dirs.ScriptsDir
     if (-not $scriptPath) {
-        Write-Host "❌ Failed to copy application script" -ForegroundColor Red
+        Write-Host "ERROR: Failed to copy application script" -ForegroundColor Red
         exit 1
     }
     
@@ -513,14 +513,14 @@ function Start-Setup {
     
     # Step 5: Create scheduled task
     if (-not (New-VaultClientScheduledTask -ScriptPath $scriptPath -TaskName $TaskName -Schedule $Schedule -Time $Time -VaultUrl $VaultUrl -VaultRole $VaultRole -SecretPaths $SecretPaths)) {
-        Write-Host "❌ Failed to create scheduled task" -ForegroundColor Red
+        Write-Host "ERROR: Failed to create scheduled task" -ForegroundColor Red
         exit 1
     }
     
     # Step 6: Test the setup
     if (Test-Setup -TaskName $TaskName -ScriptPath $scriptPath) {
         Write-Host ""
-        Write-Host "=== Setup Completed Successfully! ===" -ForegroundColor Green
+        Write-Host "SUCCESS: Setup Completed Successfully!" -ForegroundColor Green
         Write-Host ""
         Write-Host "Next Steps:" -ForegroundColor Yellow
         Write-Host "1. Ensure secrets exist in Vault (see $($dirs.ConfigDir)\VAULT_SETUP_INSTRUCTIONS.txt)" -ForegroundColor White
@@ -534,13 +534,13 @@ function Start-Setup {
         Write-Host "5. Check for updates:" -ForegroundColor White
         Write-Host "   .\setup-vault-client.ps1 -CheckUpdates" -ForegroundColor Gray
         Write-Host ""
-        Write-Host "⚠️  IMPORTANT: The application MUST run under gMSA identity to work properly." -ForegroundColor Yellow
+        Write-Host "IMPORTANT: The application MUST run under gMSA identity to work properly." -ForegroundColor Yellow
         Write-Host "   Manual execution (running the script directly) will fail because it runs under your user account." -ForegroundColor Yellow
         Write-Host "   Always use the scheduled task for testing and production use." -ForegroundColor Yellow
         Write-Host ""
         Write-Host "The application will run automatically $Schedule at $Time under gMSA identity!" -ForegroundColor Green
     } else {
-        Write-Host "❌ Setup test failed" -ForegroundColor Red
+        Write-Host "ERROR: Setup test failed" -ForegroundColor Red
         exit 1
     }
 }
