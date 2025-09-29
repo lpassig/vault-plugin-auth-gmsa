@@ -74,7 +74,7 @@ try {
 
 # Create output directory
 try {
-    if (-not (Test-Path $ConfigOutputDir)) {
+if (-not (Test-Path $ConfigOutputDir)) {
         New-Item -ItemType Directory -Path $ConfigOutputDir -Force | Out-Null
         Write-Host "Created config directory: $ConfigOutputDir" -ForegroundColor Green
     } else {
@@ -98,7 +98,7 @@ function Write-Log {
     
     # Also write to log file
     try {
-        $logFile = "$ConfigOutputDir\vault-client.log"
+    $logFile = "$ConfigOutputDir\vault-client.log"
         Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
     } catch {
         Write-Host "Failed to write to log file: $($_.Exception.Message)" -ForegroundColor Red
@@ -129,14 +129,14 @@ function Request-KerberosTicket {
             Write-Log "Attempting Windows-native Kerberos ticket request for SPN: $SPN" -Level "INFO"
             
             # Use PowerShell to request ticket via Windows SSPI
-            Add-Type -AssemblyName System.Net.Http
-            
-            $handler = New-Object System.Net.Http.HttpClientHandler
-            $handler.UseDefaultCredentials = $true
+        Add-Type -AssemblyName System.Net.Http
+        
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        $handler.UseDefaultCredentials = $true
             $handler.PreAuthenticate = $true
-            
-            $client = New-Object System.Net.Http.HttpClient($handler)
-            $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
+        
+        $client = New-Object System.Net.Http.HttpClient($handler)
+        $client.DefaultRequestHeaders.Add("User-Agent", "Vault-gMSA-Client/1.0")
             
             # Make a request to trigger Kerberos ticket request
             $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
@@ -270,13 +270,13 @@ function Get-SPNEGOTokenSSPI {
         foreach ($spn in $spnFormats) {
             try {
                 Write-Log "Trying SPN format: $spn"
-                
-                # Create a request to trigger SPNEGO negotiation
+        
+        # Create a request to trigger SPNEGO negotiation
                 $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, "$VaultUrl/v1/auth/gmsa/login")
-                
+        
                 # Send the request to trigger Windows authentication
-                $response = $client.SendAsync($request).Result
-                
+        $response = $client.SendAsync($request).Result
+        
                 Write-Log "Response status: $($response.StatusCode)"
                 
                 # Check if Authorization header was added (indicates SPNEGO token was generated)
@@ -293,11 +293,11 @@ function Get-SPNEGOTokenSSPI {
                 # If we get a 401, that's expected - try to extract token from response
                 if ($response.StatusCode -eq [System.Net.HttpStatusCode]::Unauthorized) {
                     if ($response.Headers.Contains("WWW-Authenticate")) {
-                        $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
-                        if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
-                            $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
+        $wwwAuthHeader = $response.Headers.GetValues("WWW-Authenticate")
+        if ($wwwAuthHeader -and $wwwAuthHeader[0] -like "Negotiate *") {
+            $spnegoToken = $wwwAuthHeader[0].Substring(10) # Remove "Negotiate "
                             Write-Log "SPNEGO token extracted from WWW-Authenticate header for SPN: $spn"
-                            return $spnegoToken
+            return $spnegoToken
                         }
                     }
                 }
@@ -308,6 +308,7 @@ function Get-SPNEGOTokenSSPI {
             }
         }
         
+        $client.Dispose()
         Write-Log "All SPN formats failed for SSPI SPNEGO generation" -Level "WARNING"
         return $null
         
