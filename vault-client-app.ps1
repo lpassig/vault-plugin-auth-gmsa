@@ -22,9 +22,51 @@ param(
 # Configuration and Logging Setup
 # =============================================================================
 
+# Quick DNS fix: Add hostname mapping for vault.local.lab
+try {
+    Write-Host "🔧 Applying DNS resolution fix..." -ForegroundColor Cyan
+    
+    # Extract IP from Vault URL (assuming format https://IP:port)
+    $vaultHost = [System.Uri]::new($VaultUrl).Host
+    Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
+    
+    # Check if vault.local.lab resolves
+    try {
+        $dnsResult = [System.Net.Dns]::GetHostAddresses("vault.local.lab")
+        Write-Host "✅ vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
+    } catch {
+        Write-Host "⚠️ vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
+        
+        # Add to Windows hosts file
+        $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+        $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultHost vault.local.lab"
+        
+        # Check if entry already exists
+        $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
+        if ($hostsContent -notcontains "$vaultHost vault.local.lab") {
+            Add-Content -Path $hostsPath -Value $hostsEntry -Force
+            Write-Host "✅ Added DNS mapping: $vaultHost → vault.local.lab" -ForegroundColor Green
+            Write-Host "📝 Entry added to: $hostsPath" -ForegroundColor Cyan
+        } else {
+            Write-Host "✅ DNS mapping already exists in hosts file" -ForegroundColor Green
+        }
+        
+        # Flush DNS cache
+        try {
+            ipconfig /flushdns | Out-Null
+            Write-Host "✅ DNS cache flushed" -ForegroundColor Green
+        } catch {
+            Write-Host "⚠️ Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
+        }
+    }
+} catch {
+    Write-Host "❌ DNS fix failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Manual fix: Add '$vaultHost vault.local.lab' to C:\Windows\System32\drivers\etc\hosts" -ForegroundColor Yellow
+}
+
 # Create output directory
 try {
-if (-not (Test-Path $ConfigOutputDir)) {
+    if (-not (Test-Path $ConfigOutputDir)) {
         New-Item -ItemType Directory -Path $ConfigOutputDir -Force | Out-Null
         Write-Host "Created config directory: $ConfigOutputDir" -ForegroundColor Green
     } else {
