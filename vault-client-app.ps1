@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.7 (Multi-Method Credential Acquisition)" -Level "INFO"
+Write-Log "Script version: 3.8 (Multi-Context Requirements + Fixed Fallback)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -443,25 +443,42 @@ function Get-SPNEGOTokenPInvoke {
             $outputBuffer = New-Object SSPI+SEC_BUFFER
             $contextAttr = 0
             
-            Write-Log "Calling InitializeSecurityContext with parameters:" -Level "INFO"
-            Write-Log "  - Target SPN: $TargetSPN" -Level "INFO"
-            Write-Log "  - Context requirements: 0x$(([SSPI]::ISC_REQ_CONFIDENTIALITY -bor [SSPI]::ISC_REQ_INTEGRITY -bor [SSPI]::ISC_REQ_MUTUAL_AUTH).ToString('X8'))" -Level "INFO"
-            Write-Log "  - Target data representation: $([SSPI]::SECURITY_NETWORK_DREP)" -Level "INFO"
-            
-            $result = [SSPI]::InitializeSecurityContext(
-                [ref]$credHandle,                       # Credential handle
-                [IntPtr]::Zero,                         # Context handle (null for first call)
-                $TargetSPN,                             # Target name (SPN)
-                [SSPI]::ISC_REQ_CONFIDENTIALITY -bor [SSPI]::ISC_REQ_INTEGRITY -bor [SSPI]::ISC_REQ_MUTUAL_AUTH,  # Context requirements
-                0,                                      # Reserved1
-                [SSPI]::SECURITY_NETWORK_DREP,          # Target data representation
-                [IntPtr]::Zero,                         # Input buffer
-                0,                                      # Reserved2
-                [ref]$contextHandle,                    # New context handle
-                [ref]$outputBuffer,                     # Output buffer
-                [ref]$contextAttr,                      # Context attributes
-                [ref]$expiry                            # Expiry
+            # Try different context requirements
+            $contextRequirements = @(
+                ([SSPI]::ISC_REQ_CONFIDENTIALITY -bor [SSPI]::ISC_REQ_INTEGRITY -bor [SSPI]::ISC_REQ_MUTUAL_AUTH),
+                [SSPI]::ISC_REQ_CONFIDENTIALITY,
+                [SSPI]::ISC_REQ_INTEGRITY,
+                0  # No special requirements
             )
+            
+            $result = 0
+            foreach ($req in $contextRequirements) {
+                Write-Log "Trying InitializeSecurityContext with requirements: 0x$($req.ToString('X8'))" -Level "INFO"
+                
+                $result = [SSPI]::InitializeSecurityContext(
+                    [ref]$credHandle,                       # Credential handle
+                    [IntPtr]::Zero,                         # Context handle (null for first call)
+                    $TargetSPN,                             # Target name (SPN)
+                    $req,                                   # Context requirements
+                    0,                                      # Reserved1
+                    [SSPI]::SECURITY_NETWORK_DREP,          # Target data representation
+                    [IntPtr]::Zero,                         # Input buffer
+                    0,                                      # Reserved2
+                    [ref]$contextHandle,                    # New context handle
+                    [ref]$outputBuffer,                     # Output buffer
+                    [ref]$contextAttr,                      # Context attributes
+                    [ref]$expiry                            # Expiry
+                )
+                
+                Write-Log "InitializeSecurityContext result: 0x$($result.ToString('X8'))" -Level "INFO"
+                
+                if ($result -eq [SSPI]::SEC_E_OK -or $result -eq [SSPI]::SEC_I_CONTINUE_NEEDED) {
+                    Write-Log "SUCCESS: InitializeSecurityContext succeeded with requirements: 0x$($req.ToString('X8'))" -Level "SUCCESS"
+                    break
+                } else {
+                    Write-Log "Failed with requirements 0x$($req.ToString('X8')), trying next..." -Level "WARNING"
+                }
+            }
             
             Write-Log "InitializeSecurityContext result: 0x$($result.ToString('X8'))" -Level "INFO"
             Write-Log "Context handle: Lower=$($contextHandle.dwLower), Upper=$($contextHandle.dwUpper)" -Level "INFO"
@@ -512,7 +529,7 @@ function Get-SPNEGOTokenPInvoke {
                     $request.Timeout = 10000
                     
                     # Add some headers that might trigger SPNEGO
-                    $request.Headers.Add("User-Agent", "Vault-gMSA-Client/1.0")
+                    $request.UserAgent = "Vault-gMSA-Client/1.0"
                     
                     # Try to make the request and capture the Authorization header
                     try {
@@ -892,7 +909,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.7 (Multi-Method Credential Acquisition)" -Level "INFO"
+        Write-Log "Script version: 3.8 (Multi-Context Requirements + Fixed Fallback)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
