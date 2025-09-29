@@ -839,32 +839,106 @@ function Get-SPNEGOTokenPInvoke {
                 Write-Log "Direct SPNEGO generation failed: $($_.Exception.Message)" -Level "WARNING"
             }
             
-            # Method 5: Since we have a valid Kerberos ticket, let's try a different approach
-            # Generate a token based on the Kerberos ticket information
-            Write-Log "Attempting Kerberos-based token generation..." -Level "INFO"
+            # Method 6: Force SPNEGO negotiation by making a request that will definitely return 401
+            # Based on research findings, we need to trigger Windows SSPI to generate SPNEGO tokens
+            Write-Log "Attempting to force SPNEGO negotiation..." -Level "INFO"
             
-            # Get the Kerberos ticket details
-            $klistOutput = klist 2>&1
-            if ($klistOutput -match $TargetSPN) {
-                Write-Log "Using Kerberos ticket information for token generation" -Level "INFO"
+            try {
+                # The key insight: We need to make a request that will return 401 Unauthorized
+                # This will trigger Windows SSPI to generate a SPNEGO token
                 
-                # Extract ticket information
-                $ticketInfo = $klistOutput | Where-Object { $_ -match $TargetSPN }
-                Write-Log "Ticket info: $ticketInfo" -Level "INFO"
+                # Method 6A: Try a non-existent endpoint that will definitely return 404/401
+                $testEndpoints = @(
+                    "$VaultUrl/v1/auth/nonexistent/login",
+                    "$VaultUrl/v1/auth/gmsa/nonexistent",
+                    "$VaultUrl/v1/sys/nonexistent",
+                    "$VaultUrl/v1/secret/nonexistent"
+                )
                 
-                # Generate a token based on the ticket (this is still a workaround)
-                # In a real implementation, you would extract the actual Kerberos ticket data
-            $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-                $ticketHash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ticketInfo + $timestamp))
-                $ticketHashString = [System.BitConverter]::ToString($ticketHash) -replace '-', ''
+                foreach ($endpoint in $testEndpoints) {
+                    Write-Log "Trying to force SPNEGO negotiation with: $endpoint" -Level "INFO"
+                    
+                    $webRequest = [System.Net.WebRequest]::Create($endpoint)
+                    $webRequest.Method = "POST"
+                    $webRequest.UseDefaultCredentials = $true
+                    $webRequest.PreAuthenticate = $true
+                    $webRequest.Timeout = 10000
+                    $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                    $webRequest.ContentType = "application/json"
+                    
+                    # Add request body
+                    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes('{"test":"data"}')
+                    $webRequest.ContentLength = $bodyBytes.Length
+                    
+                    $requestStream = $webRequest.GetRequestStream()
+                    $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+                    $requestStream.Close()
+                    
+                    try {
+                        $webResponse = $webRequest.GetResponse()
+                        Write-Log "Request completed with status: $($webResponse.StatusCode)" -Level "INFO"
+                        $webResponse.Close()
+                    } catch {
+                        $webStatusCode = $_.Exception.Response.StatusCode
+                        Write-Log "Request returned: $webStatusCode" -Level "INFO"
+                        
+                        # Check if Authorization header was added (this contains our SPNEGO token)
+                        if ($webRequest.Headers.Contains("Authorization")) {
+                            $authHeader = $webRequest.Headers.GetValues("Authorization")
+                            if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                                $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                                Write-Log "SUCCESS: Real SPNEGO token captured from Windows SSPI!" -Level "SUCCESS"
+                                Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                                return $spnegoToken
+                            }
+                        }
+                    }
+                }
                 
-                $spnegoData = "KERBEROS_TICKET_BASED_TOKEN_$($ticketHashString.Substring(0,16))_$timestamp"
-            $spnegoToken = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($spnegoData))
-            
-                Write-Log "Kerberos-based token generated" -Level "INFO"
-                Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                # Method 6B: Try using a different approach - make a request to a protected endpoint
+                # but without proper authentication to force SPNEGO negotiation
+                Write-Log "Trying protected endpoint approach..." -Level "INFO"
                 
-                return $spnegoToken
+                $protectedEndpoints = @(
+                    "$VaultUrl/v1/sys/config",
+                    "$VaultUrl/v1/sys/status",
+                    "$VaultUrl/v1/sys/leader",
+                    "$VaultUrl/v1/sys/seal-status"
+                )
+                
+                foreach ($endpoint in $protectedEndpoints) {
+                    Write-Log "Trying protected endpoint: $endpoint" -Level "INFO"
+                    
+                    $webRequest = [System.Net.WebRequest]::Create($endpoint)
+                    $webRequest.Method = "GET"
+                    $webRequest.UseDefaultCredentials = $true
+                    $webRequest.PreAuthenticate = $true
+                    $webRequest.Timeout = 10000
+                    $webRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                    
+                    try {
+                        $webResponse = $webRequest.GetResponse()
+                        Write-Log "Protected endpoint request completed with status: $($webResponse.StatusCode)" -Level "INFO"
+                        $webResponse.Close()
+                    } catch {
+                        $webStatusCode = $_.Exception.Response.StatusCode
+                        Write-Log "Protected endpoint request returned: $webStatusCode" -Level "INFO"
+                        
+                        # Check if Authorization header was added (this contains our SPNEGO token)
+                        if ($webRequest.Headers.Contains("Authorization")) {
+                            $authHeader = $webRequest.Headers.GetValues("Authorization")
+                            if ($authHeader -and $authHeader[0] -like "Negotiate *") {
+                                $spnegoToken = $authHeader[0].Substring(10) # Remove "Negotiate "
+                                Write-Log "SUCCESS: Real SPNEGO token captured from Windows SSPI!" -Level "SUCCESS"
+                                Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+                                return $spnegoToken
+                            }
+                        }
+                    }
+                }
+                
+            } catch {
+                Write-Log "Force SPNEGO negotiation failed: $($_.Exception.Message)" -Level "WARNING"
             }
             
             # Final fallback: Generate a placeholder token
