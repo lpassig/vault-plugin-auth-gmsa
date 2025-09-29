@@ -4,7 +4,7 @@
 
 param(
     [Parameter(Mandatory=$false)]
-    [string]$VaultIP = "107.23.32.117",
+    [string]$VaultIP = "10.0.101.151",
     
     [Parameter(Mandatory=$false)]
     [string]$VaultHostname = "vault.local.lab"

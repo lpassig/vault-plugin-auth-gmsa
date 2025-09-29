@@ -9,7 +9,7 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://vault.local.lab:8200",
+    [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
@@ -26,9 +26,17 @@ param(
 try {
     Write-Host "🔧 Applying DNS resolution fix..." -ForegroundColor Cyan
     
-    # Extract IP from Vault URL (assuming format https://IP:port)
+    # Extract IP from Vault URL and map to vault.local.lab
     $vaultHost = [System.Uri]::new($VaultUrl).Host
     Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
+    
+    # Map vault.example.com to vault.local.lab for Kerberos
+    if ($vaultHost -eq "vault.example.com") {
+        $vaultIP = "10.0.101.151"  # Your test environment IP
+        Write-Host "Mapping vault.example.com ($vaultIP) to vault.local.lab for Kerberos" -ForegroundColor Cyan
+    } else {
+        $vaultIP = $vaultHost
+    }
     
     # Check if vault.local.lab resolves
     try {
@@ -39,13 +47,13 @@ try {
         
         # Add to Windows hosts file
         $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-        $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultHost vault.local.lab"
+        $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultIP vault.local.lab"
         
         # Check if entry already exists
         $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
-        if ($hostsContent -notcontains "$vaultHost vault.local.lab") {
+        if ($hostsContent -notcontains "$vaultIP vault.local.lab") {
             Add-Content -Path $hostsPath -Value $hostsEntry -Force
-            Write-Host "✅ Added DNS mapping: $vaultHost → vault.local.lab" -ForegroundColor Green
+            Write-Host "✅ Added DNS mapping: $vaultIP → vault.local.lab" -ForegroundColor Green
             Write-Host "📝 Entry added to: $hostsPath" -ForegroundColor Cyan
         } else {
             Write-Host "✅ DNS mapping already exists in hosts file" -ForegroundColor Green
@@ -61,7 +69,7 @@ try {
     }
 } catch {
     Write-Host "❌ DNS fix failed: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Manual fix: Add '$vaultHost vault.local.lab' to C:\Windows\System32\drivers\etc\hosts" -ForegroundColor Yellow
+    Write-Host "Manual fix: Add '$vaultIP vault.local.lab' to C:\Windows\System32\drivers\etc\hosts" -ForegroundColor Yellow
 }
 
 # Create output directory
