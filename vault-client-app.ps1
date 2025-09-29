@@ -265,6 +265,149 @@ Write-Log "SPN: $SPN" -Level "INFO"
 # SPNEGO Token Generation using Win32 SSPI
 # =============================================================================
 
+# Helper function to generate SPNEGO token using Windows SSPI
+function Get-SPNEGOTokenFromSSPI {
+    param(
+        [string]$TargetSPN,
+        [string]$ChallengeToken = ""
+    )
+    
+    try {
+        Write-Log "Generating SPNEGO token using Windows SSPI for SPN: $TargetSPN" -Level "INFO"
+        
+        # Step 1: Acquire credentials handle
+        Write-Log "Step 1: Acquiring credentials handle..." -Level "INFO"
+        
+        $credHandle = New-Object SSPI+SECURITY_HANDLE
+        $expiry = New-Object SSPI+SECURITY_INTEGER
+        
+        # Try different approaches to acquire credentials
+        $result = [SSPI]::AcquireCredentialsHandle(
+            $null,                                # Principal (null = default)
+            "Negotiate",                          # Package (SPNEGO)
+            [SSPI]::SECPKG_CRED_OUTBOUND,        # Credential use
+            [IntPtr]::Zero,                      # Logon ID
+            [IntPtr]::Zero,                      # Auth data
+            [IntPtr]::Zero,                      # Get key function
+            [IntPtr]::Zero,                      # Get key argument
+            [ref]$credHandle,                    # Credential handle
+            [ref]$expiry                         # Expiry
+        )
+        
+        if ($result -ne [SSPI]::SEC_E_OK) {
+            Write-Log "ERROR: AcquireCredentialsHandle failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
+            return $null
+        }
+        
+        Write-Log "SUCCESS: Credentials handle acquired" -Level "SUCCESS"
+        
+        # Step 2: Initialize security context
+        Write-Log "Step 2: Initializing security context..." -Level "INFO"
+        Write-Log "Target SPN: $TargetSPN" -Level "INFO"
+        
+        $contextHandle = New-Object SSPI+SECURITY_HANDLE
+        $outputBuffer = New-Object SSPI+SEC_BUFFER
+        $contextAttr = 0
+        
+        # Try different context requirements
+        $contextRequirements = @(
+            ([SSPI]::ISC_REQ_CONFIDENTIALITY -bor [SSPI]::ISC_REQ_INTEGRITY -bor [SSPI]::ISC_REQ_MUTUAL_AUTH),
+            [SSPI]::ISC_REQ_CONFIDENTIALITY,
+            [SSPI]::ISC_REQ_INTEGRITY,
+            0  # No special requirements
+        )
+        
+        $result = 0
+        foreach ($req in $contextRequirements) {
+            Write-Log "Trying InitializeSecurityContext with requirements: 0x$($req.ToString('X8'))" -Level "INFO"
+            
+            $result = [SSPI]::InitializeSecurityContext(
+                [ref]$credHandle,                       # Credential handle
+                [IntPtr]::Zero,                         # Context handle (null for first call)
+                $TargetSPN,                             # Target name (SPN)
+                $req,                                   # Context requirements
+                0,                                      # Reserved1
+                [SSPI]::SECURITY_NETWORK_DREP,          # Target data representation
+                [IntPtr]::Zero,                         # Input buffer
+                0,                                      # Reserved2
+                [ref]$contextHandle,                    # New context handle
+                [ref]$outputBuffer,                     # Output buffer
+                [ref]$contextAttr,                      # Context attributes
+                [ref]$expiry                            # Expiry
+            )
+            
+            Write-Log "InitializeSecurityContext result: 0x$($result.ToString('X8'))" -Level "INFO"
+            
+            if ($result -eq [SSPI]::SEC_E_OK -or $result -eq [SSPI]::SEC_I_CONTINUE_NEEDED) {
+                Write-Log "SUCCESS: InitializeSecurityContext succeeded with requirements: 0x$($req.ToString('X8'))" -Level "SUCCESS"
+                break
+            } else {
+                Write-Log "Failed with requirements 0x$($req.ToString('X8')), trying next..." -Level "WARNING"
+            }
+        }
+        
+        if ($result -ne [SSPI]::SEC_E_OK -and $result -ne [SSPI]::SEC_I_CONTINUE_NEEDED) {
+            Write-Log "ERROR: InitializeSecurityContext failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
+            
+            # Decode common error codes
+            switch ($result) {
+                0x80090308 { 
+                    Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR"
+                    Write-Log "CRITICAL: The SPN '$TargetSPN' is not registered in Active Directory" -Level "ERROR"
+                    Write-Log "SOLUTION: Register the SPN for the Linux Vault server:" -Level "ERROR"
+                    Write-Log "  Windows: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
+                    Write-Log "  Linux: ktutil -k /path/to/vault.keytab add_entry -p $TargetSPN -e aes256-cts-hmac-sha1-96 -w password" -Level "ERROR"
+                    Write-Log "  Or use: setspn -A $TargetSPN <linux-hostname>" -Level "ERROR"
+                }
+                0x8009030E { Write-Log "ERROR: SEC_E_NO_CREDENTIALS - No credentials available" -Level "ERROR" }
+                0x8009030F { Write-Log "ERROR: SEC_E_NO_AUTHENTICATING_AUTHORITY - Cannot contact domain controller" -Level "ERROR" }
+                0x80090311 { Write-Log "ERROR: SEC_E_WRONG_PRINCIPAL - SPN does not match server" -Level "ERROR" }
+                default { Write-Log "ERROR: Unknown SSPI error code: 0x$($result.ToString('X8'))" -Level "ERROR" }
+            }
+            
+            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+            return $null
+        }
+        
+        Write-Log "SUCCESS: Security context initialized" -Level "SUCCESS"
+        Write-Log "Context attributes: 0x$($contextAttr.ToString('X8'))" -Level "INFO"
+        
+        # Step 3: Extract SPNEGO token from output buffer
+        if ($outputBuffer.cbBuffer -gt 0 -and $outputBuffer.pvBuffer -ne [IntPtr]::Zero) {
+            Write-Log "Step 3: Extracting SPNEGO token from output buffer..." -Level "INFO"
+            Write-Log "Output buffer size: $($outputBuffer.cbBuffer) bytes" -Level "INFO"
+            
+            # Copy the token data
+            $tokenBytes = New-Object byte[] $outputBuffer.cbBuffer
+            [System.Runtime.InteropServices.Marshal]::Copy($outputBuffer.pvBuffer, $tokenBytes, 0, $outputBuffer.cbBuffer)
+            
+            # Convert to base64
+            $spnegoToken = [System.Convert]::ToBase64String($tokenBytes)
+            
+            Write-Log "SUCCESS: Real SPNEGO token generated!" -Level "SUCCESS"
+            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
+            
+            # Cleanup
+            [SSPI]::FreeContextBuffer($outputBuffer.pvBuffer)
+            [SSPI]::DeleteSecurityContext([ref]$contextHandle)
+            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+            
+            return $spnegoToken
+        } else {
+            Write-Log "ERROR: No token data in output buffer" -Level "ERROR"
+            [SSPI]::DeleteSecurityContext([ref]$contextHandle)
+            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
+            return $null
+        }
+        
+    } catch {
+        Write-Log "ERROR: SPNEGO token generation failed: $($_.Exception.Message)" -Level "ERROR"
+        Write-Log "Stack trace: $($_.Exception.StackTrace)" -Level "ERROR"
+        return $null
+    }
+}
+
 function Get-SPNEGOTokenPInvoke {
     param(
         [string]$TargetSPN,
@@ -272,7 +415,8 @@ function Get-SPNEGOTokenPInvoke {
     )
     
     try {
-        Write-Log "Generating real SPNEGO token using Win32 SSPI APIs for SPN: $TargetSPN" -Level "INFO"
+        Write-Log "Generating SPNEGO token using Microsoft Negotiate Protocol for SPN: $TargetSPN" -Level "INFO"
+        Write-Log "Based on Microsoft SPNEGO specification: https://learn.microsoft.com/en-us/previous-versions/ms995331(v=msdn.10)" -Level "INFO"
         
         # Check if we have a Kerberos ticket for the target SPN
         $klistOutput = klist 2>&1
@@ -312,493 +456,208 @@ function Get-SPNEGOTokenPInvoke {
             }
         }
         
-        # Generate real SPNEGO token using Win32 SSPI APIs
-        Write-Log "Generating real SPNEGO token using Win32 SSPI APIs..." -Level "INFO"
-        
-        # Enhanced debugging for gMSA context
-        Write-Log "=== DEBUGGING gMSA CONTEXT ===" -Level "INFO"
-        Write-Log "Current user: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)" -Level "INFO"
-        Write-Log "Current user type: $([System.Security.Principal.WindowsIdentity]::GetCurrent().AuthenticationType)" -Level "INFO"
-        Write-Log "Is authenticated: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsAuthenticated)" -Level "INFO"
-        Write-Log "Is guest: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsGuest)" -Level "INFO"
-        Write-Log "Is system: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsSystem)" -Level "INFO"
-        Write-Log "Is anonymous: $([System.Security.Principal.WindowsIdentity]::GetCurrent().IsAnonymous)" -Level "INFO"
-        
-        # Check available credentials
-        Write-Log "Checking available credentials..." -Level "INFO"
+        # Method 1: Implement proper HTTP Negotiate Protocol flow
+        # Based on Microsoft documentation: https://learn.microsoft.com/en-us/previous-versions/ms995331(v=msdn.10)
         try {
-            $defaultCreds = [System.Net.CredentialCache]::DefaultCredentials
-            if ($defaultCreds) {
-                Write-Log "Default credentials available: $($defaultCreds.GetType().Name)" -Level "INFO"
-                Write-Log "Default credentials domain: $($defaultCreds.Domain)" -Level "INFO"
-                Write-Log "Default credentials username: $($defaultCreds.UserName)" -Level "INFO"
-            } else {
-                Write-Log "No default credentials available" -Level "WARNING"
+            Write-Log "Method 1: Implementing HTTP Negotiate Protocol flow..." -Level "INFO"
+            
+            # Step 1: Make initial request to trigger WWW-Authenticate: Negotiate
+            Write-Log "Step 1: Making initial request to trigger WWW-Authenticate: Negotiate..." -Level "INFO"
+            
+            $initialRequest = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+            $initialRequest.Method = "POST"
+            $initialRequest.UseDefaultCredentials = $true
+            $initialRequest.Timeout = 10000
+            $initialRequest.UserAgent = "Vault-gMSA-Client/1.0"
+            $initialRequest.ContentType = "application/json"
+            
+            # Add test content to trigger authentication
+            $body = '{"role":"test","spnego":"test"}'
+            $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+            $initialRequest.ContentLength = $bodyBytes.Length
+            
+            $requestStream = $initialRequest.GetRequestStream()
+            $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+            $requestStream.Close()
+            
+            try {
+                $initialResponse = $initialRequest.GetResponse()
+                Write-Log "Initial request completed with status: $($initialResponse.StatusCode)" -Level "INFO"
+                
+                # Check for WWW-Authenticate header
+                if ($initialResponse.Headers -and $initialResponse.Headers["WWW-Authenticate"]) {
+                    $wwwAuth = $initialResponse.Headers["WWW-Authenticate"]
+                    Write-Log "SUCCESS: Found WWW-Authenticate header: $wwwAuth" -Level "SUCCESS"
+                    
+                    if ($wwwAuth -like "Negotiate*") {
+                        Write-Log "SUCCESS: Server supports Negotiate authentication!" -Level "SUCCESS"
+                        
+                        # Extract challenge token if present
+                        $challengeToken = ""
+                        if ($wwwAuth -match "Negotiate\s+(.+)") {
+                            $challengeToken = $matches[1]
+                            Write-Log "Challenge token received: $($challengeToken.Substring(0, [Math]::Min(50, $challengeToken.Length)))..." -Level "INFO"
+                        }
+                        
+                        # Step 2: Generate SPNEGO token using Windows SSPI
+                        Write-Log "Step 2: Generating SPNEGO token using Windows SSPI..." -Level "INFO"
+                        
+                        $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN -ChallengeToken $challengeToken
+                        if ($spnegoToken) {
+                            Write-Log "SUCCESS: SPNEGO token generated via HTTP Negotiate flow!" -Level "SUCCESS"
+                            $initialResponse.Close()
+                            return $spnegoToken
+                        }
+                    }
+                } else {
+                    Write-Log "WARNING: No WWW-Authenticate header found in response" -Level "WARNING"
+                }
+                
+                $initialResponse.Close()
+            } catch {
+                $statusCode = $_.Exception.Response.StatusCode
+                Write-Log "Initial request returned: $statusCode" -Level "INFO"
+                
+                # Check for WWW-Authenticate header in error response
+                if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
+                    $wwwAuth = $_.Exception.Response.Headers["WWW-Authenticate"]
+                    Write-Log "SUCCESS: Found WWW-Authenticate header in error: $wwwAuth" -Level "SUCCESS"
+                    
+                    if ($wwwAuth -like "Negotiate*") {
+                        Write-Log "SUCCESS: Server supports Negotiate authentication!" -Level "SUCCESS"
+                        
+                        # Extract challenge token if present
+                        $challengeToken = ""
+                        if ($wwwAuth -match "Negotiate\s+(.+)") {
+                            $challengeToken = $matches[1]
+                            Write-Log "Challenge token received: $($challengeToken.Substring(0, [Math]::Min(50, $challengeToken.Length)))..." -Level "INFO"
+                        }
+                        
+                        # Generate SPNEGO token using Windows SSPI
+                        Write-Log "Generating SPNEGO token using Windows SSPI..." -Level "INFO"
+                        
+                        $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN -ChallengeToken $challengeToken
+                        if ($spnegoToken) {
+                            Write-Log "SUCCESS: SPNEGO token generated via HTTP Negotiate flow!" -Level "SUCCESS"
+                            return $spnegoToken
+                        }
+                    }
+                }
             }
         } catch {
-            Write-Log "Error checking default credentials: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "HTTP Negotiate Protocol flow failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
-        # Check Kerberos ticket cache in detail
-        Write-Log "=== DETAILED KERBEROS TICKET ANALYSIS ===" -Level "INFO"
+        # Method 2: Fallback - Direct SPNEGO token generation using Windows SSPI
+        # Based on Veridium SPNEGO configuration: https://docs.veridiumid.com/docs/v3.8/spnego-configuration-steps
         try {
-            $detailedKlist = klist 2>&1
-            Write-Log "Full klist output:" -Level "INFO"
-            $detailedKlist | ForEach-Object { Write-Log "  $_" -Level "INFO" }
+            Write-Log "Method 2: Fallback - Direct SPNEGO token generation using Windows SSPI..." -Level "INFO"
             
-            # Check for specific SPN
-            if ($detailedKlist -match $TargetSPN) {
-                Write-Log "SUCCESS: Found ticket for target SPN: $TargetSPN" -Level "SUCCESS"
-            } else {
-                Write-Log "WARNING: No ticket found for target SPN: $TargetSPN" -Level "WARNING"
-                
-                # Check for any HTTP tickets
-                $httpTickets = $detailedKlist | Where-Object { $_ -match "HTTP/" }
-                if ($httpTickets) {
-                    Write-Log "Found HTTP tickets:" -Level "INFO"
-                    $httpTickets | ForEach-Object { Write-Log "  $_" -Level "INFO" }
-                } else {
-                    Write-Log "No HTTP tickets found in cache" -Level "WARNING"
-                }
-            }
-        } catch {
-            Write-Log "Error analyzing Kerberos tickets: $($_.Exception.Message)" -Level "WARNING"
-        }
-        
-        try {
-            # Step 1: Acquire credentials handle
-            Write-Log "Step 1: Acquiring credentials handle..." -Level "INFO"
-            
-            $credHandle = New-Object SSPI+SECURITY_HANDLE
-            $expiry = New-Object SSPI+SECURITY_INTEGER
-            
-            # Try different approaches to acquire credentials
-            Write-Log "Attempting to acquire credentials handle..." -Level "INFO"
-            
-            # Method 1: Try with explicit principal (current user)
-            $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-            Write-Log "Using current user as principal: $currentUser" -Level "INFO"
-            
-            $result = [SSPI]::AcquireCredentialsHandle(
-                $currentUser,                             # Principal (current user)
-                "Negotiate",                              # Package (SPNEGO)
-                [SSPI]::SECPKG_CRED_OUTBOUND,            # Credential use
-                [IntPtr]::Zero,                          # Logon ID
-                [IntPtr]::Zero,                          # Auth data
-                [IntPtr]::Zero,                          # Get key function
-                [IntPtr]::Zero,                          # Get key argument
-                [ref]$credHandle,                        # Credential handle
-                [ref]$expiry                             # Expiry
-            )
-            
-            if ($result -ne [SSPI]::SEC_E_OK) {
-                Write-Log "Method 1 failed with result: 0x$($result.ToString('X8')), trying Method 2..." -Level "WARNING"
-                
-                # Method 2: Try with null principal (use default credentials)
-                Write-Log "Trying with null principal (default credentials)..." -Level "INFO"
-                $result = [SSPI]::AcquireCredentialsHandle(
-                    $null,                                # Principal (null = default)
-                    "Negotiate",                          # Package (SPNEGO)
-                    [SSPI]::SECPKG_CRED_OUTBOUND,        # Credential use
-                    [IntPtr]::Zero,                      # Logon ID
-                    [IntPtr]::Zero,                      # Auth data
-                    [IntPtr]::Zero,                      # Get key function
-                    [IntPtr]::Zero,                      # Get key argument
-                    [ref]$credHandle,                    # Credential handle
-                    [ref]$expiry                         # Expiry
-                )
-                
-                if ($result -ne [SSPI]::SEC_E_OK) {
-                    Write-Log "Method 2 failed with result: 0x$($result.ToString('X8')), trying Method 3..." -Level "WARNING"
-                    
-                    # Method 3: Try with Kerberos package directly
-                    Write-Log "Trying with Kerberos package directly..." -Level "INFO"
-                    $result = [SSPI]::AcquireCredentialsHandle(
-                        $null,                            # Principal
-                        "Kerberos",                       # Package (Kerberos)
-                        [SSPI]::SECPKG_CRED_OUTBOUND,    # Credential use
-                        [IntPtr]::Zero,                  # Logon ID
-                        [IntPtr]::Zero,                  # Auth data
-                        [IntPtr]::Zero,                  # Get key function
-                        [IntPtr]::Zero,                  # Get key argument
-                        [ref]$credHandle,                # Credential handle
-                        [ref]$expiry                     # Expiry
-                    )
-                }
-            }
-            
-            if ($result -ne [SSPI]::SEC_E_OK) {
-                Write-Log "ERROR: AcquireCredentialsHandle failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
-                return $null
-            }
-            
-            Write-Log "SUCCESS: Credentials handle acquired" -Level "SUCCESS"
-            
-            # Step 2: Initialize security context
-            Write-Log "Step 2: Initializing security context..." -Level "INFO"
-            Write-Log "Target SPN: $TargetSPN" -Level "INFO"
-            Write-Log "Credential handle: Lower=$($credHandle.dwLower), Upper=$($credHandle.dwUpper)" -Level "INFO"
-            
-            $contextHandle = New-Object SSPI+SECURITY_HANDLE
-            $outputBuffer = New-Object SSPI+SEC_BUFFER
-            $contextAttr = 0
-            
-            # Try different context requirements
-            $contextRequirements = @(
-                ([SSPI]::ISC_REQ_CONFIDENTIALITY -bor [SSPI]::ISC_REQ_INTEGRITY -bor [SSPI]::ISC_REQ_MUTUAL_AUTH),
-                [SSPI]::ISC_REQ_CONFIDENTIALITY,
-                [SSPI]::ISC_REQ_INTEGRITY,
-                0  # No special requirements
-            )
-            
-            $result = 0
-            foreach ($req in $contextRequirements) {
-                Write-Log "Trying InitializeSecurityContext with requirements: 0x$($req.ToString('X8'))" -Level "INFO"
-                
-                $result = [SSPI]::InitializeSecurityContext(
-                    [ref]$credHandle,                       # Credential handle
-                    [IntPtr]::Zero,                         # Context handle (null for first call)
-                    $TargetSPN,                             # Target name (SPN)
-                    $req,                                   # Context requirements
-                    0,                                      # Reserved1
-                    [SSPI]::SECURITY_NETWORK_DREP,          # Target data representation
-                    [IntPtr]::Zero,                         # Input buffer
-                    0,                                      # Reserved2
-                    [ref]$contextHandle,                    # New context handle
-                    [ref]$outputBuffer,                     # Output buffer
-                    [ref]$contextAttr,                      # Context attributes
-                    [ref]$expiry                            # Expiry
-                )
-                
-                Write-Log "InitializeSecurityContext result: 0x$($result.ToString('X8'))" -Level "INFO"
-                
-                if ($result -eq [SSPI]::SEC_E_OK -or $result -eq [SSPI]::SEC_I_CONTINUE_NEEDED) {
-                    Write-Log "SUCCESS: InitializeSecurityContext succeeded with requirements: 0x$($req.ToString('X8'))" -Level "SUCCESS"
-                    break
-                } else {
-                    Write-Log "Failed with requirements 0x$($req.ToString('X8')), trying next..." -Level "WARNING"
-                }
-            }
-            
-            Write-Log "InitializeSecurityContext result: 0x$($result.ToString('X8'))" -Level "INFO"
-            Write-Log "Context handle: Lower=$($contextHandle.dwLower), Upper=$($contextHandle.dwUpper)" -Level "INFO"
-            Write-Log "Output buffer size: $($outputBuffer.cbBuffer) bytes" -Level "INFO"
-            Write-Log "Output buffer type: $($outputBuffer.BufferType)" -Level "INFO"
-            Write-Log "Output buffer pointer: $($outputBuffer.pvBuffer)" -Level "INFO"
-            Write-Log "Context attributes: 0x$($contextAttr.ToString('X8'))" -Level "INFO"
-            
-            if ($result -ne [SSPI]::SEC_E_OK -and $result -ne [SSPI]::SEC_I_CONTINUE_NEEDED) {
-                Write-Log "ERROR: InitializeSecurityContext failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
-                
-                # Decode common error codes
-                switch ($result) {
-                    0x80090308 { 
-                        Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR"
-                        Write-Log "CRITICAL: The SPN '$TargetSPN' is not registered in Active Directory" -Level "ERROR"
-                        Write-Log "SOLUTION: Register the SPN for the Linux Vault server:" -Level "ERROR"
-                        Write-Log "  Windows: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
-                        Write-Log "  Linux: ktutil -k /path/to/vault.keytab add_entry -p $TargetSPN -e aes256-cts-hmac-sha1-96 -w password" -Level "ERROR"
-                        Write-Log "  Or use: setspn -A $TargetSPN <linux-hostname>" -Level "ERROR"
-                    }
-                    0x8009030E { Write-Log "ERROR: SEC_E_NO_CREDENTIALS - No credentials available" -Level "ERROR" }
-                    0x8009030F { Write-Log "ERROR: SEC_E_NO_AUTHENTICATING_AUTHORITY - Cannot contact domain controller" -Level "ERROR" }
-                    0x80090311 { Write-Log "ERROR: SEC_E_WRONG_PRINCIPAL - SPN does not match server" -Level "ERROR" }
-                    default { Write-Log "ERROR: Unknown SSPI error code: 0x$($result.ToString('X8'))" -Level "ERROR" }
-                }
-                
-                Write-Log "Troubleshooting steps for Linux Vault server:" -Level "ERROR"
-                Write-Log "1. Register SPN for Linux host: setspn -A $TargetSPN <linux-hostname>" -Level "ERROR"
-                Write-Log "2. Or register for gMSA: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
-                Write-Log "3. Verify SPN exists: setspn -L <linux-hostname> or setspn -L vault-gmsa" -Level "ERROR"
-                Write-Log "4. Ensure Linux Vault server has proper keytab with SPN" -Level "ERROR"
-                Write-Log "5. Check domain controller connectivity from Linux" -Level "ERROR"
-                Write-Log "6. Verify gMSA account is properly configured" -Level "ERROR"
-                
-                Write-Log "Attempting alternative SPNEGO generation method..." -Level "WARNING"
-                
-                # Alternative Method: Use PowerShell 5.1 compatible HTTP methods to capture SPNEGO token
-                try {
-                    Write-Log "Alternative Method: Using PowerShell 5.1 compatible HTTP methods to capture SPNEGO token..." -Level "INFO"
-                    
-                    # Method 1: Use WebRequest with UseDefaultCredentials
-                    try {
-                        Write-Log "Method 1: Using WebRequest with UseDefaultCredentials..." -Level "INFO"
-                        
-                        $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
-                        $request.Method = "POST"
-                        $request.UseDefaultCredentials = $true
-                        $request.Timeout = 10000
-                        $request.UserAgent = "Vault-gMSA-Client/1.0"
-                        $request.ContentType = "application/json"
-                        
-                        # Add test content
-                        $body = '{"role":"test","spnego":"test"}'
-                        $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-                        $request.ContentLength = $bodyBytes.Length
-                        
-                        $requestStream = $request.GetRequestStream()
-                        $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
-                        $requestStream.Close()
-                        
-                        try {
-                            $response = $request.GetResponse()
-                            Write-Log "Alternative WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
-                            
-                            # Check response headers for WWW-Authenticate
-                            if ($response.Headers -and $response.Headers["WWW-Authenticate"]) {
-                                Write-Log "Response WWW-Authenticate header: $($response.Headers['WWW-Authenticate'])" -Level "INFO"
-                            }
-                            
-                            $response.Close()
-                        } catch {
-                            $statusCode = $_.Exception.Response.StatusCode
-                            Write-Log "Alternative WebRequest returned: $statusCode" -Level "INFO"
-                            
-                            # Check response headers for WWW-Authenticate
-                            if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
-                                Write-Log "Error Response WWW-Authenticate header: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "INFO"
-                            }
-                            
-                            # Check if the request contains Authorization header
-                            Write-Log "Checking request headers for Authorization..." -Level "INFO"
-                            if ($request.Headers) {
-                                Write-Log "Request headers count: $($request.Headers.Count)" -Level "INFO"
-                                $authHeader = $request.Headers["Authorization"]
-                                if ($authHeader) {
-                                    Write-Log "Found Authorization header: $authHeader" -Level "INFO"
-                                    if ($authHeader -like "Negotiate *") {
-                                        $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                        Write-Log "SUCCESS: Captured SPNEGO token from WebRequest method!" -Level "SUCCESS"
-                                        Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                        [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                        return $spnegoToken
-                                    }
-                                } else {
-                                    Write-Log "No Authorization header found in request" -Level "WARNING"
-                                }
-                            } else {
-                                Write-Log "No request headers found" -Level "WARNING"
-                            }
-                        }
-                    } catch {
-                        Write-Log "WebRequest method failed: $($_.Exception.Message)" -Level "WARNING"
-                    }
-                    
-                    # Method 2: Use WebClient with UseDefaultCredentials
-                    try {
-                        Write-Log "Method 2: Using WebClient with UseDefaultCredentials..." -Level "INFO"
-                        
-                        $webClient = New-Object System.Net.WebClient
-                        $webClient.UseDefaultCredentials = $true
-                        $webClient.Headers.Add("User-Agent", "Vault-gMSA-Client/1.0")
-                        $webClient.Headers.Add("Content-Type", "application/json")
-                        
-                        $body = '{"role":"test","spnego":"test"}'
-                        
-                        try {
-                            $response = $webClient.UploadString("$VaultUrl/v1/auth/gmsa/login", "POST", $body)
-                            Write-Log "Alternative WebClient completed successfully" -Level "INFO"
-                        } catch {
-                            $statusCode = $_.Exception.Response.StatusCode
-                            Write-Log "Alternative WebClient returned: $statusCode" -Level "INFO"
-                            
-                            # Check response headers for WWW-Authenticate
-                            if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
-                                Write-Log "Error Response WWW-Authenticate header: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "INFO"
-                            }
-                            
-                            # Check if the request contains Authorization header
-                            Write-Log "Checking WebClient headers for Authorization..." -Level "INFO"
-                            if ($webClient.Headers) {
-                                Write-Log "WebClient headers count: $($webClient.Headers.Count)" -Level "INFO"
-                                $authHeader = $webClient.Headers["Authorization"]
-                                if ($authHeader) {
-                                    Write-Log "Found Authorization header: $authHeader" -Level "INFO"
-                                    if ($authHeader -like "Negotiate *") {
-                                        $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                        Write-Log "SUCCESS: Captured SPNEGO token from WebClient method!" -Level "SUCCESS"
-                                        Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                        [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                        return $spnegoToken
-                                    }
-                                } else {
-                                    Write-Log "No Authorization header found in WebClient" -Level "WARNING"
-                                }
-                            } else {
-                                Write-Log "No WebClient headers found" -Level "WARNING"
-                            }
-                        }
-                        
-                        $webClient.Dispose()
-                    } catch {
-                        Write-Log "WebClient method failed: $($_.Exception.Message)" -Level "WARNING"
-                    }
-                    
-                    # Method 3: Use Invoke-WebRequest with UseDefaultCredentials
-                    try {
-                        Write-Log "Method 3: Using Invoke-WebRequest with UseDefaultCredentials..." -Level "INFO"
-                        
-                        $body = '{"role":"test","spnego":"test"}'
-                        
-                        try {
-                            $response = Invoke-WebRequest -Uri "$VaultUrl/v1/auth/gmsa/login" -Method Post -Body $body -ContentType "application/json" -UseDefaultCredentials -UseBasicParsing -TimeoutSec 10
-                            Write-Log "Alternative Invoke-WebRequest completed with status: $($response.StatusCode)" -Level "INFO"
-                        } catch {
-                            $statusCode = $_.Exception.Response.StatusCode
-                            Write-Log "Alternative Invoke-WebRequest returned: $statusCode" -Level "INFO"
-                            
-                            # Check if the request contains Authorization header
-                            if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["Authorization"]) {
-                                $authHeader = $_.Exception.Response.Headers["Authorization"]
-                                if ($authHeader -like "Negotiate *") {
-                                    $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                    Write-Log "SUCCESS: Captured SPNEGO token from Invoke-WebRequest method!" -Level "SUCCESS"
-                                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                    [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                    return $spnegoToken
-                                }
-                            }
-                        }
-                    } catch {
-                        Write-Log "Invoke-WebRequest method failed: $($_.Exception.Message)" -Level "WARNING"
-                    }
-                    
-                    # Method 4: Try different endpoints to trigger SPNEGO negotiation
-                    try {
-                        Write-Log "Method 4: Trying different endpoints to trigger SPNEGO negotiation..." -Level "INFO"
-                        
-                        $testEndpoints = @(
-                            "/v1/sys/health",
-                            "/v1/sys/status", 
-                            "/v1/sys/seal-status",
-                            "/v1/sys/leader",
-                            "/v1/sys/config",
-                            "/v1/auth/gmsa/config",
-                            "/v1/auth/gmsa/login"
-                        )
-                        
-                        foreach ($endpoint in $testEndpoints) {
-                            Write-Log "Testing endpoint: $endpoint" -Level "INFO"
-                            
-                            try {
-                                $testRequest = [System.Net.WebRequest]::Create("$VaultUrl$endpoint")
-                                $testRequest.Method = "GET"
-                                $testRequest.UseDefaultCredentials = $true
-                                $testRequest.Timeout = 5000
-                                $testRequest.UserAgent = "Vault-gMSA-Client/1.0"
-                                
-                                $testResponse = $testRequest.GetResponse()
-                                Write-Log "Endpoint $endpoint returned: $($testResponse.StatusCode)" -Level "INFO"
-                                
-                                # Check for WWW-Authenticate header
-                                if ($testResponse.Headers -and $testResponse.Headers["WWW-Authenticate"]) {
-                                    Write-Log "SUCCESS: Found WWW-Authenticate header: $($testResponse.Headers['WWW-Authenticate'])" -Level "SUCCESS"
-                                    
-                                    # Check if the request contains Authorization header
-                                    if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
-                                        $authHeader = $testRequest.Headers["Authorization"]
-                                        Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
-                                        if ($authHeader -like "Negotiate *") {
-                                            $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                            Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
-                                            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                            return $spnegoToken
-                                        }
-                                    }
-                                }
-                                
-                                $testResponse.Close()
-                            } catch {
-                                $statusCode = $_.Exception.Response.StatusCode
-                                Write-Log "Endpoint $endpoint returned: $statusCode" -Level "INFO"
-                                
-                                # Check for WWW-Authenticate header in error response
-                                if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
-                                    Write-Log "SUCCESS: Found WWW-Authenticate header in error: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "SUCCESS"
-                                    
-                                    # Check if the request contains Authorization header
-                                    if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
-                                        $authHeader = $testRequest.Headers["Authorization"]
-                                        Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
-                                        if ($authHeader -like "Negotiate *") {
-                                            $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                            Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
-                                            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                                            return $spnegoToken
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } catch {
-                        Write-Log "Method 4 failed: $($_.Exception.Message)" -Level "WARNING"
-                    }
-                    
-                } catch {
-                    Write-Log "Alternative method failed: $($_.Exception.Message)" -Level "WARNING"
-                }
-                
-                # Final Alternative: Try using the existing Kerberos ticket directly
-                try {
-                    Write-Log "Final Alternative: Attempting to extract token from existing Kerberos ticket..." -Level "INFO"
-                    
-                    # Since we have a valid Kerberos ticket, try to use it directly
-                    # This is a more advanced approach that might work
-                    Write-Log "Attempting direct Kerberos ticket usage..." -Level "INFO"
-                    
-                    # For now, we'll return null and let the caller handle it
-                    Write-Log "Direct Kerberos ticket usage not implemented yet" -Level "WARNING"
-                } catch {
-                    Write-Log "Final alternative method failed: $($_.Exception.Message)" -Level "WARNING"
-                }
-                
-                [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                return $null
-            }
-            
-            Write-Log "SUCCESS: Security context initialized" -Level "SUCCESS"
-            Write-Log "Context attributes: 0x$($contextAttr.ToString('X8'))" -Level "INFO"
-            
-            # Step 3: Extract SPNEGO token from output buffer
-            if ($outputBuffer.cbBuffer -gt 0 -and $outputBuffer.pvBuffer -ne [IntPtr]::Zero) {
-                Write-Log "Step 3: Extracting SPNEGO token from output buffer..." -Level "INFO"
-                Write-Log "Output buffer size: $($outputBuffer.cbBuffer) bytes" -Level "INFO"
-                
-                # Copy the token data
-                $tokenBytes = New-Object byte[] $outputBuffer.cbBuffer
-                [System.Runtime.InteropServices.Marshal]::Copy($outputBuffer.pvBuffer, $tokenBytes, 0, $outputBuffer.cbBuffer)
-                
-                # Convert to base64
-                $spnegoToken = [System.Convert]::ToBase64String($tokenBytes)
-                
-                Write-Log "SUCCESS: Real SPNEGO token generated!" -Level "SUCCESS"
-                Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-                
-                # Cleanup
-                [SSPI]::FreeContextBuffer($outputBuffer.pvBuffer)
-                [SSPI]::DeleteSecurityContext([ref]$contextHandle)
-                [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                
+            $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN
+            if ($spnegoToken) {
+                Write-Log "SUCCESS: SPNEGO token generated via direct SSPI method!" -Level "SUCCESS"
                 return $spnegoToken
-            } else {
-                Write-Log "ERROR: No token data in output buffer" -Level "ERROR"
-                [SSPI]::DeleteSecurityContext([ref]$contextHandle)
-                [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-                return $null
             }
-            
         } catch {
-            Write-Log "ERROR: Win32 SSPI token generation failed: $($_.Exception.Message)" -Level "ERROR"
-            Write-Log "Stack trace: $($_.Exception.StackTrace)" -Level "ERROR"
-            return $null
+            Write-Log "Direct SSPI method failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
-        # This code should never be reached if the above logic is correct
-        Write-Log "ERROR: Unexpected code path - SPNEGO generation failed" -Level "ERROR"
+        # Method 3: Alternative - Try to capture SPNEGO token from HTTP requests
+        # This method attempts to capture Authorization headers from HTTP requests
+        try {
+            Write-Log "Method 3: Alternative - Capturing SPNEGO token from HTTP requests..." -Level "INFO"
+            
+            # Try different endpoints to trigger SPNEGO negotiation
+            $testEndpoints = @(
+                "/v1/sys/health",
+                "/v1/sys/status", 
+                "/v1/sys/seal-status",
+                "/v1/sys/leader",
+                "/v1/sys/config",
+                "/v1/auth/gmsa/config",
+                "/v1/auth/gmsa/login"
+            )
+            
+            foreach ($endpoint in $testEndpoints) {
+                Write-Log "Testing endpoint: $endpoint" -Level "INFO"
+                
+                try {
+                    $testRequest = [System.Net.WebRequest]::Create("$VaultUrl$endpoint")
+                    $testRequest.Method = "GET"
+                    $testRequest.UseDefaultCredentials = $true
+                    $testRequest.Timeout = 5000
+                    $testRequest.UserAgent = "Vault-gMSA-Client/1.0"
+                    
+                    $testResponse = $testRequest.GetResponse()
+                    Write-Log "Endpoint $endpoint returned: $($testResponse.StatusCode)" -Level "INFO"
+                    
+                    # Check for WWW-Authenticate header
+                    if ($testResponse.Headers -and $testResponse.Headers["WWW-Authenticate"]) {
+                        Write-Log "SUCCESS: Found WWW-Authenticate header: $($testResponse.Headers['WWW-Authenticate'])" -Level "SUCCESS"
+                        
+                        # Check if the request contains Authorization header
+                        if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
+                            $authHeader = $testRequest.Headers["Authorization"]
+                            Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
+                            if ($authHeader -like "Negotiate *") {
+                                $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
+                                Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                $testResponse.Close()
+                                return $spnegoToken
+                            }
+                        }
+                    }
+                    
+                    $testResponse.Close()
+                } catch {
+                    $statusCode = $_.Exception.Response.StatusCode
+                    Write-Log "Endpoint $endpoint returned: $statusCode" -Level "INFO"
+                    
+                    # Check for WWW-Authenticate header in error response
+                    if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
+                        Write-Log "SUCCESS: Found WWW-Authenticate header in error: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "SUCCESS"
+                        
+                        # Check if the request contains Authorization header
+                        if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
+                            $authHeader = $testRequest.Headers["Authorization"]
+                            Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
+                            if ($authHeader -like "Negotiate *") {
+                                $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
+                                Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
+                                Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                                return $spnegoToken
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {
+            Write-Log "Alternative method failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # If all methods failed, return null with detailed error information
+        Write-Log "ERROR: All SPNEGO token generation methods failed" -Level "ERROR"
+        Write-Log "Cannot proceed with authentication without a valid SPNEGO token" -Level "ERROR"
+        Write-Log "" -Level "ERROR"
+        Write-Log "TROUBLESHOOTING STEPS:" -Level "ERROR"
+        Write-Log "1. Verify SPN registration: setspn -L vault-gmsa" -Level "ERROR"
+        Write-Log "2. Check Kerberos tickets: klist" -Level "ERROR"
+        Write-Log "3. Ensure gMSA account has proper permissions" -Level "ERROR"
+        Write-Log "4. Verify Vault server keytab configuration" -Level "ERROR"
+        Write-Log "5. Check domain controller connectivity" -Level "ERROR"
+        Write-Log "" -Level "ERROR"
+        Write-Log "REFERENCES:" -Level "ERROR"
+        Write-Log "- Microsoft SPNEGO Protocol: https://learn.microsoft.com/en-us/previous-versions/ms995331(v=msdn.10)" -Level "ERROR"
+        Write-Log "- Veridium SPNEGO Configuration: https://docs.veridiumid.com/docs/v3.8/spnego-configuration-steps" -Level "ERROR"
+        
         return $null
+        
+    } catch {
+        Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
+        return $null
+    }
+}
         
     } catch {
         Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
@@ -1108,7 +967,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.12 (Multi-Endpoint SPNEGO Trigger)" -Level "INFO"
+        Write-Log "Script version: 3.13 (Microsoft SPNEGO Protocol Implementation)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
