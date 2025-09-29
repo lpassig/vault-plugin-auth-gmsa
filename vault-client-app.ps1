@@ -739,10 +739,6 @@ function Get-SPNEGOTokenPInvoke {
         
         return $spnegoToken
         
-    } catch {
-        Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
-        return $null
-    }
 }
 
 function Get-SPNEGOTokenKerberos {
