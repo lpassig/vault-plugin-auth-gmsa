@@ -1,3 +1,13 @@
+param(
+    [string]$VaultUrl = "https://vault.local.lab:8200",
+    [string]$VaultRole = "vault-gmsa-role",
+    [string]$SPN = "HTTP/vault.local.lab",
+    [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
+    [string]$ConfigOutputDir = "C:\vault-client\config",
+    [switch]$CreateScheduledTask = $false,
+    [string]$TaskName = "VaultClientApp"
+)
+
 # Import required .NET types for Win32 SSPI
 Add-Type -TypeDefinition @"
 using System;
@@ -78,16 +88,6 @@ public class SSPI
     public const int SEC_I_COMPLETE_AND_CONTINUE = 0x00090314;
 }
 "@
-
-param(
-    [string]$VaultUrl = "https://vault.local.lab:8200",
-    [string]$VaultRole = "vault-gmsa-role",
-    [string]$SPN = "HTTP/vault.local.lab",
-    [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
-    [string]$ConfigOutputDir = "C:\vault-client\config",
-    [switch]$CreateScheduledTask = $false,
-    [string]$TaskName = "VaultClientApp"
-)
 
 # =============================================================================
 # Configuration and Logging Setup
