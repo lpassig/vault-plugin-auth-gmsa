@@ -30,13 +30,9 @@ try {
     $vaultHost = [System.Uri]::new($VaultUrl).Host
     Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
     
-    # Map vault.example.com to vault.local.lab for Kerberos
-    if ($vaultHost -eq "vault.example.com") {
-        $vaultIP = "10.0.101.151"  # Your test environment IP
-        Write-Host "Mapping vault.example.com ($vaultIP) to vault.local.lab for Kerberos" -ForegroundColor Cyan
-    } else {
-        $vaultIP = $vaultHost
-    }
+    # Map vault.local.lab to vault.example.com for Kerberos
+    $vaultIP = "10.0.101.151"  # Your test environment IP
+    Write-Host "Mapping vault.local.lab ($vaultIP) for Kerberos authentication" -ForegroundColor Cyan
     
     # Check if vault.local.lab resolves
     try {
