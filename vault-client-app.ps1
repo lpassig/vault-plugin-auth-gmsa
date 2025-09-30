@@ -58,7 +58,7 @@ function Write-Log {
 }
 
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 4.3 (HTTP Negotiate Protocol - curl.exe Fixed JSON)" -Level "INFO"
+Write-Log "Script version: 4.4 (HTTP Negotiate Protocol - curl.exe File-based JSON)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
 Write-Log "Current user: $(whoami)" -Level "INFO"
@@ -165,6 +165,10 @@ function Authenticate-ToVault {
                 # Create request body with role (compact JSON, no formatting)
                 $bodyJson = (@{ role = $Role } | ConvertTo-Json -Compress)
                 
+                # Write JSON to temp file to avoid shell escaping issues
+                $tempJsonFile = Join-Path $env:TEMP "vault-auth-body.json"
+                $bodyJson | Out-File -FilePath $tempJsonFile -Encoding ASCII -NoNewline -Force
+                
                 # Use curl.exe with --negotiate to authenticate directly
                 # curl will automatically generate and send SPNEGO token via Windows SSPI
                 $curlArgs = @(
@@ -172,14 +176,18 @@ function Authenticate-ToVault {
                     "--user", ":",
                     "-X", "POST",
                     "-H", "Content-Type: application/json",
-                    "-d", $bodyJson,
+                    "--data-binary", "@$tempJsonFile",  # Use file to avoid shell escaping
                     "-k",  # Skip SSL verification
                     "-s",  # Silent mode
                     "$VaultUrl/v1/auth/gmsa/login"
                 )
                 
+                Write-Log "Request body: $bodyJson" -Level "INFO"
                 Write-Log "Executing: curl.exe $($curlArgs -join ' ')" -Level "INFO"
                 $curlOutput = & $curlPath $curlArgs 2>&1 | Out-String
+                
+                # Clean up temp file
+                Remove-Item -Path $tempJsonFile -Force -ErrorAction SilentlyContinue
                 Write-Log "curl.exe output: $curlOutput" -Level "INFO"
                 
                 # Parse JSON response
