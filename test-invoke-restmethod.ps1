@@ -116,8 +116,8 @@ try {
             
             Write-Log "✓ Token is valid - successfully retrieved secret" "SUCCESS"
             Write-Log "Secret keys: $($secretResponse.data.data.Keys -join ', ')" "INFO"
-            
-        } catch {
+        }
+        catch {
             if ($_.Exception.Message -match "404") {
                 Write-Log "Note: Secret path doesn't exist (this is OK for testing)" "INFO"
             } else {
@@ -150,8 +150,8 @@ try {
         
         exit 1
     }
-    
-} catch {
+}
+catch {
     Write-Log "" "ERROR"
     Write-Log "========================================" "ERROR"
     Write-Log "AUTHENTICATION FAILED!" "ERROR"
