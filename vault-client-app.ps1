@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.14 (Enhanced Token Debugging)" -Level "INFO"
+Write-Log "Script version: 3.15 (DSInternals Integration)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -353,11 +353,23 @@ function Get-SPNEGOTokenFromSSPI {
             switch ($result) {
                 0x80090308 { 
                     Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR"
-                    Write-Log "CRITICAL: The SPN '$TargetSPN' is not registered in Active Directory" -Level "ERROR"
-                    Write-Log "SOLUTION: Register the SPN for the Linux Vault server:" -Level "ERROR"
-                    Write-Log "  Windows: setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
-                    Write-Log "  Linux: ktutil -k /path/to/vault.keytab add_entry -p $TargetSPN -e aes256-cts-hmac-sha1-96 -w password" -Level "ERROR"
-                    Write-Log "  Or use: setspn -A $TargetSPN <linux-hostname>" -Level "ERROR"
+                    Write-Log "CRITICAL: This usually means a KEYTAB MISMATCH on the Vault server" -Level "ERROR"
+                    Write-Log "" -Level "ERROR"
+                    Write-Log "COMMON CAUSES:" -Level "ERROR"
+                    Write-Log "  1. SPN not registered: setspn -L vault-gmsa" -Level "ERROR"
+                    Write-Log "  2. Keytab mismatch: Vault keytab doesn't match gMSA password" -Level "ERROR"
+                    Write-Log "  3. gMSA password rotated: Need to regenerate keytab" -Level "ERROR"
+                    Write-Log "" -Level "ERROR"
+                    Write-Log "SOLUTIONS:" -Level "ERROR"
+                    Write-Log "  Option 1: Register SPN (if missing):" -Level "ERROR"
+                    Write-Log "    setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
+                    Write-Log "" -Level "ERROR"
+                    Write-Log "  Option 2: Regenerate keytab with DSInternals (RECOMMENDED):" -Level "ERROR"
+                    Write-Log "    .\generate-gmsa-keytab-dsinternals.ps1 -UpdateVault" -Level "ERROR"
+                    Write-Log "    This extracts the current gMSA password and generates a matching keytab" -Level "ERROR"
+                    Write-Log "" -Level "ERROR"
+                    Write-Log "  Option 3: Check Vault keytab configuration:" -Level "ERROR"
+                    Write-Log "    ssh user@vault-server 'VAULT_SKIP_VERIFY=1 vault read auth/gmsa/config'" -Level "ERROR"
                 }
                 0x8009030E { Write-Log "ERROR: SEC_E_NO_CREDENTIALS - No credentials available" -Level "ERROR" }
                 0x8009030F { Write-Log "ERROR: SEC_E_NO_AUTHENTICATING_AUTHORITY - Cannot contact domain controller" -Level "ERROR" }
@@ -978,7 +990,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.14 (Enhanced Token Debugging)" -Level "INFO"
+        Write-Log "Script version: 3.15 (DSInternals Integration)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
