@@ -658,12 +658,6 @@ function Get-SPNEGOTokenPInvoke {
         return $null
     }
 }
-        
-    } catch {
-        Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
-        return $null
-    }
-}
 
 function Request-KerberosTicket {
     param(
