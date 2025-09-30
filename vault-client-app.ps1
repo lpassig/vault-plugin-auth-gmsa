@@ -847,13 +847,27 @@ function Authenticate-ToVault {
         Write-Log "Generating SPNEGO token..." -Level "INFO"
         $spnegoToken = Get-SPNEGOTokenPInvoke -TargetSPN $SPN -VaultUrl $VaultUrl
         
-        Write-Log "Debug: SPNEGO token generation result: $($spnegoToken | Get-Member)" -Level "DEBUG"
-        Write-Log "Debug: SPNEGO token value: $spnegoToken" -Level "DEBUG"
-        Write-Log "Debug: SPNEGO token type: $($spnegoToken.GetType())" -Level "DEBUG"
+        # Debug: Check what was returned
+        if ($spnegoToken -eq $null) {
+            Write-Log "Debug: SPNEGO token is NULL" -Level "DEBUG"
+            Write-Log "ERROR: Failed to generate SPNEGO token" -Level "ERROR"
+            Write-Log "Cannot proceed with authentication without a valid SPNEGO token" -Level "ERROR"
+            return $null
+        }
+        
+        Write-Log "Debug: SPNEGO token returned successfully" -Level "DEBUG"
+        Write-Log "Debug: SPNEGO token type: $($spnegoToken.GetType().Name)" -Level "DEBUG"
+        Write-Log "Debug: SPNEGO token value length: $($spnegoToken.Length)" -Level "DEBUG"
         
         # Validate token format
         if ($spnegoToken -is [array] -or $spnegoToken -is [System.Collections.ArrayList]) {
             Write-Log "ERROR: Invalid token format - token is an array instead of string" -Level "ERROR"
+            Write-Log "Token value: $($spnegoToken | ConvertTo-Json)" -Level "ERROR"
+            return $null
+        }
+        
+        if (-not ($spnegoToken -is [string])) {
+            Write-Log "ERROR: Token is not a string - type: $($spnegoToken.GetType().Name)" -Level "ERROR"
             Write-Log "Token value: $($spnegoToken | ConvertTo-Json)" -Level "ERROR"
             return $null
         }
