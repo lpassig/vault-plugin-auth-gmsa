@@ -36,10 +36,10 @@ Write-Host ""
 Write-Host "Step 4: Check what SPNs are registered to EC2AMAZ-UB1QVDL$..." -ForegroundColor Cyan
 try {
     $computerSpnQuery = setspn -L EC2AMAZ-UB1QVDL$ 2>&1 | Out-String
-    Write-Host "SPNs for EC2AMAZ-UB1QVDL$:" -ForegroundColor White
+    Write-Host "SPNs for EC2AMAZ-UB1QVDL`$:" -ForegroundColor White
     Write-Host $computerSpnQuery -ForegroundColor Gray
 } catch {
-    Write-Host "Could not query SPNs for EC2AMAZ-UB1QVDL$: $_" -ForegroundColor Red
+    Write-Host "Could not query SPNs for EC2AMAZ-UB1QVDL`$: $_" -ForegroundColor Red
 }
 
 Write-Host ""
