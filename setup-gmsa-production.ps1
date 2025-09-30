@@ -264,7 +264,7 @@ function Step2-MoveSPN {
     if ($gmsaSPNs -match $SPN) {
         Write-Success "Verified: SPN '$SPN' is on '$GMSAName'"
         Write-Host ""
-        Write-Host "Registered SPNs for $GMSAName:" -ForegroundColor Cyan
+        Write-Host "Registered SPNs for ${GMSAName}:" -ForegroundColor Cyan
         $gmsaSPNs | Where-Object { $_ -match "^\s+HTTP" } | ForEach-Object {
             Write-Host "  $_" -ForegroundColor White
         }
@@ -459,7 +459,7 @@ function Step6-ConfigureVault {
     Write-Host ""
     
     Write-Host "# Copy keytab to Vault server" -ForegroundColor Cyan
-    Write-Command "scp $keytabB64File user@$VaultServer:/tmp/"
+    Write-Command "scp $keytabB64File user@${VaultServer}:/tmp/"
     Write-Host ""
     
     Write-Host "# Configure Vault auth method with AUTO-ROTATION" -ForegroundColor Cyan
