@@ -1,200 +1,35 @@
+# Vault gMSA Client using HTTP Negotiate Protocol
+# This script uses Windows HTTP stack for automatic SPNEGO generation
+
 param(
     [string]$VaultUrl = "https://vault.local.lab:8200",
-    [string]$VaultRole = "vault-gmsa-role",
-    [string]$SPN = "",  # Auto-detect from VaultUrl if not specified
+    [string]$VaultRole = "default",  # Use "default" for HTTP Negotiate, or specify custom role
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
-    [string]$ConfigOutputDir = "C:\vault-client\config",
-    [switch]$CreateScheduledTask = $false,
-    [string]$TaskName = "VaultClientApp"
+    [string]$ConfigOutputDir = "C:\vault-client\config"
 )
-
-# Import required .NET types for Win32 SSPI
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-using System.Security.Principal;
-
-public class SSPI
-{
-    [DllImport("secur32.dll", CharSet = CharSet.Unicode)]
-    public static extern int AcquireCredentialsHandle(
-        string pszPrincipal,
-        string pszPackage,
-        int fCredentialUse,
-        IntPtr pvLogonId,
-        IntPtr pAuthData,
-        IntPtr pGetKeyFn,
-        IntPtr pvGetKeyArgument,
-        ref SECURITY_HANDLE phCredential,
-        ref SECURITY_INTEGER ptsExpiry
-    );
-
-    [DllImport("secur32.dll")]
-    public static extern int InitializeSecurityContext(
-        ref SECURITY_HANDLE phCredential,
-        IntPtr phContext,
-        string pszTargetName,
-        int fContextReq,
-        int Reserved1,
-        int TargetDataRep,
-        IntPtr pInput,
-        int Reserved2,
-        ref SECURITY_HANDLE phNewContext,
-        ref SEC_BUFFER pOutput,
-        out int pfContextAttr,
-        ref SECURITY_INTEGER ptsExpiry
-    );
-
-    [DllImport("secur32.dll")]
-    public static extern int FreeContextBuffer(IntPtr pvContextBuffer);
-
-    [DllImport("secur32.dll")]
-    public static extern int FreeCredentialsHandle(ref SECURITY_HANDLE phCredential);
-
-    [DllImport("secur32.dll")]
-    public static extern int DeleteSecurityContext(ref SECURITY_HANDLE phContext);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SECURITY_HANDLE
-    {
-        public IntPtr dwLower;
-        public IntPtr dwUpper;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SECURITY_INTEGER
-    {
-        public uint LowPart;
-        public int HighPart;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct SEC_BUFFER
-    {
-        public int cbBuffer;
-        public int BufferType;
-        public IntPtr pvBuffer;
-    }
-
-    public const int SECPKG_CRED_OUTBOUND = 2;
-    public const int SECURITY_NETWORK_DREP = 0;
-    public const int ISC_REQ_CONFIDENTIALITY = 0x10;
-    public const int ISC_REQ_INTEGRITY = 0x20;
-    public const int ISC_REQ_MUTUAL_AUTH = 0x40;
-    public const int SECBUFFER_TOKEN = 2;
-    public const int SEC_E_OK = 0;
-    public const int SEC_I_CONTINUE_NEEDED = 0x00090312;
-    public const int SEC_I_COMPLETE_NEEDED = 0x00090313;
-    public const int SEC_I_COMPLETE_AND_CONTINUE = 0x00090314;
-}
-"@
 
 # =============================================================================
 # Configuration and Logging Setup
 # =============================================================================
 
-# Bypass SSL certificate validation for testing (NOT for production)
-try {
-    # Method 1: Use ServicePointManager (legacy)
-    Add-Type @"
-        using System.Net;
-        using System.Security.Cryptography.X509Certificates;
-        public class TrustAllCertsPolicy : ICertificatePolicy {
-            public bool CheckValidationResult(
-                ServicePoint svcPoint, X509Certificate certificate,
-                WebRequest request, int certificateProblem) {
-                return true;
-            }
+# Bypass SSL certificate validation for testing
+Add-Type @"
+    using System.Net;
+    using System.Security.Cryptography.X509Certificates;
+    public class TrustAllCertsPolicy : ICertificatePolicy {
+        public bool CheckValidationResult(
+            ServicePoint svcPoint, X509Certificate certificate,
+            WebRequest request, int certificateProblem) {
+            return true;
         }
+    }
 "@
-    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
-    
-    Write-Host "SSL certificate validation bypassed for testing" -ForegroundColor Yellow
-    Write-Host "ServicePointManager CertificatePolicy: $([System.Net.ServicePointManager]::CertificatePolicy)" -ForegroundColor Cyan
-    Write-Host "ServicePointManager SecurityProtocol: $([System.Net.ServicePointManager]::SecurityProtocol)" -ForegroundColor Cyan
-} catch {
-    Write-Host "Could not bypass SSL certificate validation: $($_.Exception.Message)" -ForegroundColor Yellow
-}
-
-# Quick DNS fix: Add hostname mapping for vault.local.lab
-try {
-    Write-Host "Applying DNS resolution fix..." -ForegroundColor Cyan
-    
-    # Extract hostname/IP from Vault URL
-    $vaultHost = [System.Uri]::new($VaultUrl).Host
-    Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
-    
-    # Check if it's an IP address
-    $isIP = [System.Net.IPAddress]::TryParse($vaultHost, [ref]$null)
-    
-    if ($isIP) {
-        Write-Host "Detected IP address: $vaultHost" -ForegroundColor Cyan
-        $vaultIP = $vaultHost
-        Write-Host "Using IP: $vaultIP for vault.local.lab mapping" -ForegroundColor Cyan
-    } else {
-        Write-Host "Detected hostname: $vaultHost" -ForegroundColor Cyan
-        # Try to resolve hostname to IP
-        try {
-            $dnsResult = [System.Net.Dns]::GetHostAddresses($vaultHost)
-            $vaultIP = $dnsResult[0].IPAddressToString
-            Write-Host "Resolved hostname to IP: $vaultIP" -ForegroundColor Cyan
-        } catch {
-            Write-Host "Could not resolve hostname, using as-is" -ForegroundColor Yellow
-            $vaultIP = $vaultHost
-        }
-    }
-    
-    # Only apply hostname mapping if using hostname-based SPN
-    if ($SPN -like "HTTP/vault.local.lab") {
-    # Check if vault.local.lab resolves
-    try {
-        $dnsResult = [System.Net.Dns]::GetHostAddresses("vault.local.lab")
-        Write-Host "vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
-    } catch {
-        Write-Host "WARNING: vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
-        
-        # Add to Windows hosts file
-        $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-        $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultIP vault.local.lab"
-        
-        # Check if entry already exists
-        $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
-        if ($hostsContent -notcontains "$vaultIP vault.local.lab") {
-            Add-Content -Path $hostsPath -Value $hostsEntry -Force
-                Write-Host "SUCCESS: Added '$vaultIP vault.local.lab' to hosts file" -ForegroundColor Green
-        } else {
-                Write-Host "Hosts entry already exists" -ForegroundColor Green
-        }
-        
-        # Flush DNS cache
-        try {
-            ipconfig /flushdns | Out-Null
-            Write-Host "SUCCESS: DNS cache flushed" -ForegroundColor Green
-        } catch {
-            Write-Host "WARNING: Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
-        }
-        }
-    } else {
-        Write-Host "Using IP-based SPN: $SPN - no hostname mapping needed" -ForegroundColor Green
-    }
-} catch {
-    Write-Host "ERROR: DNS fix failed: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Manual fix: Add '$vaultIP vault.local.lab' to C:\Windows\System32\drivers\etc\hosts" -ForegroundColor Yellow
-}
+[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 
 # Create output directory
-try {
 if (-not (Test-Path $ConfigOutputDir)) {
-        New-Item -ItemType Directory -Path $ConfigOutputDir -Force | Out-Null
-        Write-Host "Created config directory: $ConfigOutputDir" -ForegroundColor Green
-    } else {
-        Write-Host "Config directory already exists: $ConfigOutputDir" -ForegroundColor Green
-    }
-} catch {
-    Write-Host "Failed to create config directory: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Using current directory for logs" -ForegroundColor Yellow
-    $ConfigOutputDir = "."
+    New-Item -ItemType Directory -Path $ConfigOutputDir -Force | Out-Null
 }
 
 # Logging function
@@ -207,7 +42,6 @@ function Write-Log {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $logMessage = "[$timestamp] [$Level] $Message"
     
-    # Write to console with color coding
     switch ($Level) {
         "ERROR" { Write-Host $logMessage -ForegroundColor Red }
         "WARNING" { Write-Host $logMessage -ForegroundColor Yellow }
@@ -216,731 +50,117 @@ function Write-Log {
         default { Write-Host $logMessage }
     }
     
-    # Also write to log file
-    try {
     $logFile = "$ConfigOutputDir\vault-client.log"
-        Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
-    } catch {
-        Write-Host "Failed to write to log file: $($_.Exception.Message)" -ForegroundColor Red
-    }
+    Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
 }
 
-# Auto-detect SPN if not specified
-if ([string]::IsNullOrEmpty($SPN)) {
-    $vaultHost = [System.Uri]::new($VaultUrl).Host
-    $isIP = [System.Net.IPAddress]::TryParse($vaultHost, [ref]$null)
-    
-    if ($isIP) {
-        $SPN = "HTTP/$vaultHost"
-        Write-Log "Auto-detected IP-based SPN: $SPN" -Level "INFO"
-        
-        # Check if IP SPN support is enabled
-        try {
-            $tryIPSPN = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters" -Name "TryIPSPN" -ErrorAction SilentlyContinue
-            if ($tryIPSPN -and $tryIPSPN.TryIPSPN -eq 1) {
-                Write-Log "SUCCESS: IP SPN support is enabled" -Level "SUCCESS"
-            } else {
-                Write-Log "WARNING: IP SPN support may not be enabled" -Level "WARNING"
-                Write-Log "To enable IP SPN support, run as Administrator:" -Level "WARNING"
-                Write-Log "reg add \"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters\" /v TryIPSPN /t REG_DWORD /d 1 /f" -Level "WARNING"
-            }
-        } catch {
-            Write-Log "WARNING: Could not check IP SPN support status" -Level "WARNING"
-        }
-    } else {
-        $SPN = "HTTP/$vaultHost"
-        Write-Log "Auto-detected hostname-based SPN: $SPN" -Level "INFO"
-    }
-}
-
-# Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.15 (DSInternals Integration)" -Level "INFO"
+Write-Log "Script version: 4.0 (HTTP Negotiate Protocol)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
-Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
-Write-Log "SPN: $SPN" -Level "INFO"
+Write-Log "Current user: $(whoami)" -Level "INFO"
 
 # =============================================================================
-# SPNEGO Token Generation using Win32 SSPI
-# =============================================================================
-
-# Helper function to generate SPNEGO token using Windows SSPI
-function Get-SPNEGOTokenFromSSPI {
-    param(
-        [string]$TargetSPN,
-        [string]$ChallengeToken = ""
-    )
-    
-    try {
-        Write-Log "Generating SPNEGO token using Windows SSPI for SPN: $TargetSPN" -Level "INFO"
-        
-        # Step 1: Acquire credentials handle
-        Write-Log "Step 1: Acquiring credentials handle..." -Level "INFO"
-        
-        $credHandle = New-Object SSPI+SECURITY_HANDLE
-        $expiry = New-Object SSPI+SECURITY_INTEGER
-        
-        # Try different approaches to acquire credentials
-        $result = [SSPI]::AcquireCredentialsHandle(
-            $null,                                # Principal (null = default)
-            "Negotiate",                          # Package (SPNEGO)
-            [SSPI]::SECPKG_CRED_OUTBOUND,        # Credential use
-            [IntPtr]::Zero,                      # Logon ID
-            [IntPtr]::Zero,                      # Auth data
-            [IntPtr]::Zero,                      # Get key function
-            [IntPtr]::Zero,                      # Get key argument
-            [ref]$credHandle,                    # Credential handle
-            [ref]$expiry                         # Expiry
-        )
-        
-        if ($result -ne [SSPI]::SEC_E_OK) {
-            Write-Log "ERROR: AcquireCredentialsHandle failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
-        return $null
-        }
-        
-        Write-Log "SUCCESS: Credentials handle acquired" -Level "SUCCESS"
-        
-        # Step 2: Initialize security context
-        Write-Log "Step 2: Initializing security context..." -Level "INFO"
-        Write-Log "Target SPN: $TargetSPN" -Level "INFO"
-        
-        $contextHandle = New-Object SSPI+SECURITY_HANDLE
-        $outputBuffer = New-Object SSPI+SEC_BUFFER
-        $contextAttr = 0
-        
-        # Try different context requirements
-        $contextRequirements = @(
-            ([SSPI]::ISC_REQ_CONFIDENTIALITY -bor [SSPI]::ISC_REQ_INTEGRITY -bor [SSPI]::ISC_REQ_MUTUAL_AUTH),
-            [SSPI]::ISC_REQ_CONFIDENTIALITY,
-            [SSPI]::ISC_REQ_INTEGRITY,
-            0  # No special requirements
-        )
-        
-        $result = 0
-        foreach ($req in $contextRequirements) {
-            Write-Log "Trying InitializeSecurityContext with requirements: 0x$($req.ToString('X8'))" -Level "INFO"
-            
-            $result = [SSPI]::InitializeSecurityContext(
-                [ref]$credHandle,                       # Credential handle
-                [IntPtr]::Zero,                         # Context handle (null for first call)
-                $TargetSPN,                             # Target name (SPN)
-                $req,                                   # Context requirements
-                0,                                      # Reserved1
-                [SSPI]::SECURITY_NETWORK_DREP,          # Target data representation
-                [IntPtr]::Zero,                         # Input buffer
-                0,                                      # Reserved2
-                [ref]$contextHandle,                    # New context handle
-                [ref]$outputBuffer,                     # Output buffer
-                [ref]$contextAttr,                      # Context attributes
-                [ref]$expiry                            # Expiry
-            )
-            
-            Write-Log "InitializeSecurityContext result: 0x$($result.ToString('X8'))" -Level "INFO"
-            
-            if ($result -eq [SSPI]::SEC_E_OK -or $result -eq [SSPI]::SEC_I_CONTINUE_NEEDED) {
-                Write-Log "SUCCESS: InitializeSecurityContext succeeded with requirements: 0x$($req.ToString('X8'))" -Level "SUCCESS"
-                break
-            } else {
-                Write-Log "Failed with requirements 0x$($req.ToString('X8')), trying next..." -Level "WARNING"
-            }
-        }
-        
-        if ($result -ne [SSPI]::SEC_E_OK -and $result -ne [SSPI]::SEC_I_CONTINUE_NEEDED) {
-            Write-Log "ERROR: InitializeSecurityContext failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
-            
-            # Decode common error codes
-            switch ($result) {
-                0x80090308 { 
-                    Write-Log "ERROR: SEC_E_UNKNOWN_CREDENTIALS - No valid credentials for SPN: $TargetSPN" -Level "ERROR"
-                    Write-Log "CRITICAL: This usually means a KEYTAB MISMATCH on the Vault server" -Level "ERROR"
-                    Write-Log "" -Level "ERROR"
-                    Write-Log "COMMON CAUSES:" -Level "ERROR"
-                    Write-Log "  1. SPN not registered: setspn -L vault-gmsa" -Level "ERROR"
-                    Write-Log "  2. Keytab mismatch: Vault keytab doesn't match gMSA password" -Level "ERROR"
-                    Write-Log "  3. gMSA password rotated: Need to regenerate keytab" -Level "ERROR"
-                    Write-Log "" -Level "ERROR"
-                    Write-Log "SOLUTIONS:" -Level "ERROR"
-                    Write-Log "  Option 1: Register SPN (if missing):" -Level "ERROR"
-                    Write-Log "    setspn -A $TargetSPN vault-gmsa" -Level "ERROR"
-                    Write-Log "" -Level "ERROR"
-                    Write-Log "  Option 2: Regenerate keytab with DSInternals (RECOMMENDED):" -Level "ERROR"
-                    Write-Log "    .\generate-gmsa-keytab-dsinternals.ps1 -UpdateVault" -Level "ERROR"
-                    Write-Log "    This extracts the current gMSA password and generates a matching keytab" -Level "ERROR"
-                    Write-Log "" -Level "ERROR"
-                    Write-Log "  Option 3: Check Vault keytab configuration:" -Level "ERROR"
-                    Write-Log "    ssh user@vault-server 'VAULT_SKIP_VERIFY=1 vault read auth/gmsa/config'" -Level "ERROR"
-                }
-                0x8009030E { Write-Log "ERROR: SEC_E_NO_CREDENTIALS - No credentials available" -Level "ERROR" }
-                0x8009030F { Write-Log "ERROR: SEC_E_NO_AUTHENTICATING_AUTHORITY - Cannot contact domain controller" -Level "ERROR" }
-                0x80090311 { Write-Log "ERROR: SEC_E_WRONG_PRINCIPAL - SPN does not match server" -Level "ERROR" }
-                default { Write-Log "ERROR: Unknown SSPI error code: 0x$($result.ToString('X8'))" -Level "ERROR" }
-            }
-            
-            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-            return $null
-        }
-        
-        Write-Log "SUCCESS: Security context initialized" -Level "SUCCESS"
-        Write-Log "Context attributes: 0x$($contextAttr.ToString('X8'))" -Level "INFO"
-        
-        # Step 3: Extract SPNEGO token from output buffer
-        if ($outputBuffer.cbBuffer -gt 0 -and $outputBuffer.pvBuffer -ne [IntPtr]::Zero) {
-            Write-Log "Step 3: Extracting SPNEGO token from output buffer..." -Level "INFO"
-            Write-Log "Output buffer size: $($outputBuffer.cbBuffer) bytes" -Level "INFO"
-            
-            # Copy the token data
-            $tokenBytes = New-Object byte[] $outputBuffer.cbBuffer
-            [System.Runtime.InteropServices.Marshal]::Copy($outputBuffer.pvBuffer, $tokenBytes, 0, $outputBuffer.cbBuffer)
-            
-            # Convert to base64
-            $spnegoToken = [System.Convert]::ToBase64String($tokenBytes)
-            
-            Write-Log "SUCCESS: Real SPNEGO token generated!" -Level "SUCCESS"
-            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-            Write-Log "Token (first 50 chars): $($spnegoToken.Substring(0, [Math]::Min(50, $spnegoToken.Length)))..." -Level "INFO"
-            
-            # Cleanup
-            [SSPI]::FreeContextBuffer($outputBuffer.pvBuffer)
-            [SSPI]::DeleteSecurityContext([ref]$contextHandle)
-            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-            
-            return $spnegoToken
-        } else {
-            Write-Log "ERROR: No token data in output buffer" -Level "ERROR"
-            [SSPI]::DeleteSecurityContext([ref]$contextHandle)
-            [SSPI]::FreeCredentialsHandle([ref]$credHandle)
-            return $null
-        }
-        
-    } catch {
-        Write-Log "ERROR: SPNEGO token generation failed: $($_.Exception.Message)" -Level "ERROR"
-        Write-Log "Stack trace: $($_.Exception.StackTrace)" -Level "ERROR"
-        return $null
-    }
-}
-
-function Get-SPNEGOTokenPInvoke {
-    param(
-        [string]$TargetSPN,
-        [string]$VaultUrl
-    )
-    
-    try {
-        Write-Log "Generating SPNEGO token using Microsoft Negotiate Protocol for SPN: $TargetSPN" -Level "INFO"
-        Write-Log "Based on Microsoft SPNEGO specification: https://learn.microsoft.com/en-us/previous-versions/ms995331(v=msdn.10)" -Level "INFO"
-        
-        # Check if we have a Kerberos ticket for the target SPN
-        $klistOutput = klist 2>&1
-        if ($klistOutput -match $TargetSPN) {
-            Write-Log "Kerberos ticket found for $TargetSPN" -Level "INFO"
-            Write-Log "Ticket details: $($klistOutput -join '; ')" -Level "INFO"
-        } else {
-            Write-Log "No Kerberos ticket found for $TargetSPN" -Level "WARNING"
-            
-            # Check if we have a TGT (Ticket Granting Ticket)
-            if ($klistOutput -match "krbtgt/LOCAL.LAB") {
-                Write-Log "TGT (Ticket Granting Ticket) found - attempting to request service ticket" -Level "INFO"
-                
-                # Try to request the service ticket using klist
-                Write-Log "Requesting service ticket for $TargetSPN using klist..." -Level "INFO"
-                try {
-                    $serviceTicketResult = klist get $TargetSPN 2>&1
-                    Write-Log "Service ticket request result: $serviceTicketResult" -Level "INFO"
-                    
-                    # Check if service ticket was obtained
-                    Start-Sleep -Seconds 2
-                    $updatedKlistOutput = klist 2>&1
-                    if ($updatedKlistOutput -match $TargetSPN) {
-                        Write-Log "SUCCESS: Service ticket obtained for $TargetSPN" -Level "SUCCESS"
-                    } else {
-                        Write-Log "WARNING: Service ticket request may have failed" -Level "WARNING"
-                        Write-Log "Proceeding with TGT - Windows SSPI may generate service ticket on-demand" -Level "INFO"
-                    }
-            } catch {
-                    Write-Log "Service ticket request failed: $($_.Exception.Message)" -Level "WARNING"
-                    Write-Log "Proceeding with TGT - Windows SSPI may generate service ticket on-demand" -Level "INFO"
-                }
-            } else {
-                Write-Log "No TGT found - cannot proceed with SPNEGO generation" -Level "ERROR"
-                Write-Log "gMSA account must have valid Kerberos tickets" -Level "ERROR"
-                return $null
-            }
-        }
-        
-        # Method 1: Implement proper HTTP Negotiate Protocol flow
-        # Based on Microsoft documentation: https://learn.microsoft.com/en-us/previous-versions/ms995331(v=msdn.10)
-        try {
-            Write-Log "Method 1: Implementing HTTP Negotiate Protocol flow..." -Level "INFO"
-            
-            # Step 1: Make initial request to trigger WWW-Authenticate: Negotiate
-            Write-Log "Step 1: Making initial request to trigger WWW-Authenticate: Negotiate..." -Level "INFO"
-            
-            $initialRequest = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
-            $initialRequest.Method = "POST"
-            $initialRequest.UseDefaultCredentials = $true
-            $initialRequest.Timeout = 10000
-            $initialRequest.UserAgent = "Vault-gMSA-Client/1.0"
-            $initialRequest.ContentType = "application/json"
-            
-            # Add test content to trigger authentication
-            $body = '{"role":"test","spnego":"test"}'
-            $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-            $initialRequest.ContentLength = $bodyBytes.Length
-            
-            $requestStream = $initialRequest.GetRequestStream()
-            $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
-            $requestStream.Close()
-            
-            try {
-                $initialResponse = $initialRequest.GetResponse()
-                Write-Log "Initial request completed with status: $($initialResponse.StatusCode)" -Level "INFO"
-                
-                # Check for WWW-Authenticate header
-                if ($initialResponse.Headers -and $initialResponse.Headers["WWW-Authenticate"]) {
-                    $wwwAuth = $initialResponse.Headers["WWW-Authenticate"]
-                    Write-Log "SUCCESS: Found WWW-Authenticate header: $wwwAuth" -Level "SUCCESS"
-                    
-                    if ($wwwAuth -like "Negotiate*") {
-                        Write-Log "SUCCESS: Server supports Negotiate authentication!" -Level "SUCCESS"
-                        
-                        # Extract challenge token if present
-                        $challengeToken = ""
-                        if ($wwwAuth -match "Negotiate\s+(.+)") {
-                            $challengeToken = $matches[1]
-                            Write-Log "Challenge token received: $($challengeToken.Substring(0, [Math]::Min(50, $challengeToken.Length)))..." -Level "INFO"
-                        }
-                        
-                        # Step 2: Generate SPNEGO token using Windows SSPI
-                        Write-Log "Step 2: Generating SPNEGO token using Windows SSPI..." -Level "INFO"
-                        
-                        $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN -ChallengeToken $challengeToken
-                        if ($spnegoToken -and $spnegoToken -ne $null -and $spnegoToken -ne "") {
-                            Write-Log "SUCCESS: SPNEGO token generated via HTTP Negotiate flow!" -Level "SUCCESS"
-                            $initialResponse.Close()
-                            return $spnegoToken
-        } else {
-                            Write-Log "HTTP Negotiate flow returned null or empty token" -Level "WARNING"
-                        }
-                    }
-                } else {
-                    Write-Log "WARNING: No WWW-Authenticate header found in response" -Level "WARNING"
-                }
-                
-                $initialResponse.Close()
-            } catch {
-                $statusCode = $_.Exception.Response.StatusCode
-                Write-Log "Initial request returned: $statusCode" -Level "INFO"
-                
-                # Check for WWW-Authenticate header in error response
-                if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
-                    $wwwAuth = $_.Exception.Response.Headers["WWW-Authenticate"]
-                    Write-Log "SUCCESS: Found WWW-Authenticate header in error: $wwwAuth" -Level "SUCCESS"
-                    
-                    if ($wwwAuth -like "Negotiate*") {
-                        Write-Log "SUCCESS: Server supports Negotiate authentication!" -Level "SUCCESS"
-                        
-                        # Extract challenge token if present
-                        $challengeToken = ""
-                        if ($wwwAuth -match "Negotiate\s+(.+)") {
-                            $challengeToken = $matches[1]
-                            Write-Log "Challenge token received: $($challengeToken.Substring(0, [Math]::Min(50, $challengeToken.Length)))..." -Level "INFO"
-                        }
-                        
-                        # Generate SPNEGO token using Windows SSPI
-                        Write-Log "Generating SPNEGO token using Windows SSPI..." -Level "INFO"
-                        
-                        $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN -ChallengeToken $challengeToken
-                        if ($spnegoToken) {
-                            Write-Log "SUCCESS: SPNEGO token generated via HTTP Negotiate flow!" -Level "SUCCESS"
-                            return $spnegoToken
-                        }
-                    }
-                }
-            }
-        } catch {
-            Write-Log "HTTP Negotiate Protocol flow failed: $($_.Exception.Message)" -Level "WARNING"
-        }
-        
-        # Method 2: Fallback - Direct SPNEGO token generation using Windows SSPI
-        # Based on Veridium SPNEGO configuration: https://docs.veridiumid.com/docs/v3.8/spnego-configuration-steps
-        try {
-            Write-Log "Method 2: Fallback - Direct SPNEGO token generation using Windows SSPI..." -Level "INFO"
-            
-            $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN
-            if ($spnegoToken -and $spnegoToken -ne $null -and $spnegoToken -ne "") {
-                Write-Log "SUCCESS: SPNEGO token generated via direct SSPI method!" -Level "SUCCESS"
-                return $spnegoToken
-            } else {
-                Write-Log "Direct SSPI method returned null or empty token" -Level "WARNING"
-            }
-    } catch {
-            Write-Log "Direct SSPI method failed: $($_.Exception.Message)" -Level "WARNING"
-        }
-        
-        # Method 3: Alternative - Try to capture SPNEGO token from HTTP requests
-        # This method attempts to capture Authorization headers from HTTP requests
-        try {
-            Write-Log "Method 3: Alternative - Capturing SPNEGO token from HTTP requests..." -Level "INFO"
-            
-            # Try different endpoints to trigger SPNEGO negotiation
-            $testEndpoints = @(
-                "/v1/sys/health",
-                "/v1/sys/status", 
-                "/v1/sys/seal-status",
-                "/v1/sys/leader",
-                "/v1/sys/config",
-                "/v1/auth/gmsa/config",
-                "/v1/auth/gmsa/login"
-            )
-            
-            foreach ($endpoint in $testEndpoints) {
-                Write-Log "Testing endpoint: $endpoint" -Level "INFO"
-                
-                try {
-                    $testRequest = [System.Net.WebRequest]::Create("$VaultUrl$endpoint")
-                    $testRequest.Method = "GET"
-                    $testRequest.UseDefaultCredentials = $true
-                    $testRequest.Timeout = 5000
-                    $testRequest.UserAgent = "Vault-gMSA-Client/1.0"
-                    
-                    $testResponse = $testRequest.GetResponse()
-                    Write-Log "Endpoint $endpoint returned: $($testResponse.StatusCode)" -Level "INFO"
-                    
-                    # Check for WWW-Authenticate header
-                    if ($testResponse.Headers -and $testResponse.Headers["WWW-Authenticate"]) {
-                        Write-Log "SUCCESS: Found WWW-Authenticate header: $($testResponse.Headers['WWW-Authenticate'])" -Level "SUCCESS"
-                        
-                        # Check if the request contains Authorization header
-                        if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
-                            $authHeader = $testRequest.Headers["Authorization"]
-                            Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
-                            if ($authHeader -like "Negotiate *") {
-                                $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
-                                Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                $testResponse.Close()
-                                return $spnegoToken
-                            }
-                        }
-                    }
-                    
-                    $testResponse.Close()
-                } catch {
-                    $statusCode = $_.Exception.Response.StatusCode
-                    Write-Log "Endpoint $endpoint returned: $statusCode" -Level "INFO"
-                    
-                    # Check for WWW-Authenticate header in error response
-                    if ($_.Exception.Response.Headers -and $_.Exception.Response.Headers["WWW-Authenticate"]) {
-                        Write-Log "SUCCESS: Found WWW-Authenticate header in error: $($_.Exception.Response.Headers['WWW-Authenticate'])" -Level "SUCCESS"
-                        
-                        # Check if the request contains Authorization header
-                        if ($testRequest.Headers -and $testRequest.Headers["Authorization"]) {
-                            $authHeader = $testRequest.Headers["Authorization"]
-                            Write-Log "SUCCESS: Found Authorization header: $authHeader" -Level "SUCCESS"
-                            if ($authHeader -like "Negotiate *") {
-                                $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
-                                Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
-                                Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                return $spnegoToken
-            }
-                        }
-                    }
-                }
-            }
-        } catch {
-            Write-Log "Alternative method failed: $($_.Exception.Message)" -Level "WARNING"
-        }
-        
-        # If all methods failed, return null with detailed error information
-        Write-Log "ERROR: All SPNEGO token generation methods failed" -Level "ERROR"
-        Write-Log "Cannot proceed with authentication without a valid SPNEGO token" -Level "ERROR"
-        Write-Log "" -Level "ERROR"
-        Write-Log "TROUBLESHOOTING STEPS:" -Level "ERROR"
-        Write-Log "1. Verify SPN registration: setspn -L vault-gmsa" -Level "ERROR"
-        Write-Log "2. Check Kerberos tickets: klist" -Level "ERROR"
-        Write-Log "3. Ensure gMSA account has proper permissions" -Level "ERROR"
-        Write-Log "4. Verify Vault server keytab configuration" -Level "ERROR"
-        Write-Log "5. Check domain controller connectivity" -Level "ERROR"
-        Write-Log "" -Level "ERROR"
-        Write-Log "REFERENCES:" -Level "ERROR"
-        Write-Log "- Microsoft SPNEGO Protocol: https://learn.microsoft.com/en-us/previous-versions/ms995331(v=msdn.10)" -Level "ERROR"
-        Write-Log "Debug: About to return null from Get-SPNEGOTokenPInvoke" -Level "DEBUG"
-        $nullValue = $null
-        Write-Log "Debug: Returning null value: $nullValue" -Level "DEBUG"
-        return $nullValue
-        
-    } catch {
-        Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
-        return $null
-    }
-}
-
-function Request-KerberosTicket {
-    param(
-        [string]$TargetSPN
-    )
-    
-    try {
-        Write-Log "Requesting Kerberos ticket for SPN: $TargetSPN" -Level "INFO"
-        
-        $overallTimeout = 30  # Overall timeout in seconds
-        $startTime = Get-Date
-        
-        # Method 1: Use klist to request ticket
-        try {
-            Write-Log "Method 1: Requesting ticket using klist..." -Level "INFO"
-            $klistResult = klist 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Log "SUCCESS: klist ticket request succeeded" -Level "SUCCESS"
-                Write-Log "klist output: $klistResult" -Level "INFO"
-            } else {
-                Write-Log "klist ticket request failed: $klistResult" -Level "WARNING"
-            }
-        } catch {
-            Write-Log "klist ticket request failed: $($_.Exception.Message)" -Level "WARNING"
-        }
-        
-        # Method 2: Use Windows SSPI to request ticket via HTTP request
-        try {
-            # Check timeout
-            if ((Get-Date) - $startTime -gt [TimeSpan]::FromSeconds($overallTimeout)) {
-                Write-Log "Timeout reached, skipping remaining methods" -Level "WARNING"
-                return $false
-            }
-            
-            Write-Log "Method 2: Requesting ticket using Windows SSPI..." -Level "INFO"
-            
-            # Extract hostname from SPN for HTTP request
-            if ($TargetSPN -match "HTTP/(.+)") {
-                $hostname = $matches[1]
-        } else {
-                $hostname = $TargetSPN
-            }
-            
-            Write-Log "Using hostname for request: $hostname" -Level "INFO"
-            
-            # Method 2A: Try to request service ticket using klist with specific SPN
-            Write-Log "Method 2A: Requesting service ticket using klist for SPN: $TargetSPN" -Level "INFO"
-            try {
-                # Use klist to request a service ticket for the specific SPN
-                $klistResult = klist get $TargetSPN 2>&1
-                Write-Log "klist service ticket request result: $klistResult" -Level "INFO"
-                
-                # Check if the request was successful
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Log "SUCCESS: Service ticket request completed" -Level "SUCCESS"
-                } else {
-                    Write-Log "Service ticket request failed with exit code: $LASTEXITCODE" -Level "WARNING"
-                    }
-                } catch {
-                Write-Log "klist service ticket request failed: $($_.Exception.Message)" -Level "WARNING"
-            }
-            
-            # Method 2B: Create HTTP request to trigger Kerberos ticket request
-            Write-Log "Method 2B: Creating HTTP request to trigger service ticket..." -Level "INFO"
-            
-            # Create HTTP request to trigger Kerberos ticket request
-            $request = [System.Net.WebRequest]::Create("https://$hostname")
-            $request.Method = "GET"
-            $request.UseDefaultCredentials = $true
-            $request.Timeout = 10000
-            $request.UserAgent = "Vault-gMSA-Client/1.0"
-            
-            try {
-                $response = $request.GetResponse()
-                $response.Close()
-                Write-Log "SSPI request completed successfully" -Level "INFO"
-            } catch {
-                $statusCode = $_.Exception.Response.StatusCode
-                Write-Log "SSPI request returned: $statusCode" -Level "INFO"
-                
-                # 401 Unauthorized is expected - it triggers Kerberos negotiation
-                if ($statusCode -eq 401) {
-                    Write-Log "SUCCESS: 401 Unauthorized - Kerberos ticket request triggered" -Level "SUCCESS"
-                }
-            }
-            
-            # Method 2C: Try using Invoke-WebRequest to trigger service ticket
-            Write-Log "Method 2C: Using Invoke-WebRequest to trigger service ticket..." -Level "INFO"
-            try {
-                $webResponse = Invoke-WebRequest -Uri "https://$hostname" -UseDefaultCredentials -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
-                Write-Log "Invoke-WebRequest completed with status: $($webResponse.StatusCode)" -Level "INFO"
-            } catch {
-                if ($_.Exception.Response) {
-                    $statusCode = $_.Exception.Response.StatusCode
-                    Write-Log "Invoke-WebRequest returned: $statusCode" -Level "INFO"
-                    
-                    if ($statusCode -eq 401) {
-                        Write-Log "SUCCESS: 401 Unauthorized - Service ticket request triggered" -Level "SUCCESS"
-                    }
-        } else {
-                    Write-Log "Invoke-WebRequest failed with non-HTTP error: $($_.Exception.Message)" -Level "WARNING"
-                }
-            }
-            
-    } catch {
-            Write-Log "SSPI ticket request failed: $($_.Exception.Message)" -Level "WARNING"
-        }
-        
-        # Method 3: Try using PowerShell's built-in Kerberos functionality
-        try {
-            Write-Log "Method 3: Using PowerShell's built-in Kerberos functionality..." -Level "INFO"
-            
-            # Try to create a credential and use it to request a service ticket
-            $credential = [System.Net.CredentialCache]::DefaultCredentials
-            if ($credential) {
-                Write-Log "Default credentials available: $($credential.GetType().Name)" -Level "INFO"
-                
-                # Try to make a request that will trigger service ticket request
-                try {
-                    $webClient = New-Object System.Net.WebClient
-                    $webClient.UseDefaultCredentials = $true
-                    $webClient.DownloadString("https://$hostname")
-                    Write-Log "WebClient request completed successfully" -Level "INFO"
-                } catch {
-                    Write-Log "WebClient request failed: $($_.Exception.Message)" -Level "INFO"
-                }
-            }
-    } catch {
-            Write-Log "PowerShell Kerberos method failed: $($_.Exception.Message)" -Level "WARNING"
-        }
-        
-        # Check if ticket was obtained
-        Start-Sleep -Seconds 5  # Give more time for ticket to be cached
-        
-        $klistOutput = klist 2>&1
-        Write-Log "Final klist check for SPN: $TargetSPN" -Level "INFO"
-        Write-Log "Full klist output: $($klistOutput -join '; ')" -Level "INFO"
-        
-        if ($klistOutput -match $TargetSPN) {
-            Write-Log "SUCCESS: Kerberos ticket obtained for $TargetSPN" -Level "SUCCESS"
-            Write-Log "Ticket details: $($klistOutput -join '; ')" -Level "INFO"
-            return $true
-        } else {
-            Write-Log "WARNING: No Kerberos ticket found for $TargetSPN after request attempts" -Level "WARNING"
-            Write-Log "Available tickets: $($klistOutput -join '; ')" -Level "WARNING"
-            
-            # Additional debugging: Check if we have any HTTP service tickets
-            $httpTickets = $klistOutput | Where-Object { $_ -match "HTTP/" }
-            if ($httpTickets) {
-                Write-Log "Found HTTP service tickets: $($httpTickets -join '; ')" -Level "INFO"
-            } else {
-                Write-Log "No HTTP service tickets found in cache" -Level "WARNING"
-            }
-            
-            return $false
-        }
-        
-    } catch {
-        Write-Log "Kerberos ticket request failed: $($_.Exception.Message)" -Level "ERROR"
-        return $false
-    }
-}
-
-# =============================================================================
-# Vault Authentication
+# Vault Authentication using HTTP Negotiate
 # =============================================================================
 
 function Authenticate-ToVault {
     param(
         [string]$VaultUrl,
-        [string]$Role,
-        [string]$SPN
+        [string]$Role = "default"
     )
     
     try {
-        Write-Log "Starting Vault authentication process..." -Level "INFO"
+        Write-Log "Starting Vault authentication using HTTP Negotiate protocol..." -Level "INFO"
         Write-Log "Vault URL: $VaultUrl" -Level "INFO"
         Write-Log "Role: $Role" -Level "INFO"
-        Write-Log "SPN: $SPN" -Level "INFO"
         
-        # Generate SPNEGO token
-        Write-Log "Generating SPNEGO token..." -Level "INFO"
-        $spnegoToken = Get-SPNEGOTokenPInvoke -TargetSPN $SPN -VaultUrl $VaultUrl
-        
-        # Debug: Check what was returned
-        if ($spnegoToken -eq $null) {
-            Write-Log "Debug: SPNEGO token is NULL" -Level "DEBUG"
-            Write-Log "ERROR: Failed to generate SPNEGO token" -Level "ERROR"
-            Write-Log "Cannot proceed with authentication without a valid SPNEGO token" -Level "ERROR"
-            return $null
-        }
-        
-        Write-Log "Debug: SPNEGO token returned successfully" -Level "DEBUG"
-        Write-Log "Debug: SPNEGO token type: $($spnegoToken.GetType().Name)" -Level "DEBUG"
-        Write-Log "Debug: SPNEGO token value length: $($spnegoToken.Length)" -Level "DEBUG"
-        
-        # Validate token format
-        if ($spnegoToken -is [array] -or $spnegoToken -is [System.Collections.ArrayList]) {
-            Write-Log "ERROR: Invalid token format - token is an array instead of string" -Level "ERROR"
-            Write-Log "Token value: $($spnegoToken | ConvertTo-Json)" -Level "ERROR"
-            return $null
-        }
-        
-        if (-not ($spnegoToken -is [string])) {
-            Write-Log "ERROR: Token is not a string - type: $($spnegoToken.GetType().Name)" -Level "ERROR"
-            Write-Log "Token value: $($spnegoToken | ConvertTo-Json)" -Level "ERROR"
-            return $null
-        }
-        
-        if ($spnegoToken.Length -lt 10) {
-            Write-Log "ERROR: Token too short - likely invalid" -Level "ERROR"
-            Write-Log "Token length: $($spnegoToken.Length) characters" -Level "ERROR"
-            Write-Log "Token value: $spnegoToken" -Level "ERROR"
-            return $null
-        }
-        
-        Write-Log "SPNEGO token generated successfully" -Level "SUCCESS"
-        Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-        
-        # Prepare authentication request
-        $authBody = @{
-            role = $Role
-            spnego = $spnegoToken
-        } | ConvertTo-Json
-        
-        Write-Log "Authentication request body prepared" -Level "INFO"
-        Write-Log "Request body: $authBody" -Level "INFO"
-        
-        # Send authentication request to Vault
-        Write-Log "Sending authentication request to Vault..." -Level "INFO"
-        
+        # Method 1: Try Invoke-RestMethod with UseDefaultCredentials
         try {
-            $response = Invoke-RestMethod -Uri "$VaultUrl/v1/auth/gmsa/login" -Method Post -Body $authBody -ContentType "application/json" -UseBasicParsing
+            Write-Log "Method 1: Using Invoke-RestMethod with UseDefaultCredentials..." -Level "INFO"
+            
+            $response = Invoke-RestMethod `
+                -Uri "$VaultUrl/v1/auth/gmsa/login" `
+                -Method Post `
+                -UseDefaultCredentials `
+                -UseBasicParsing `
+                -ErrorAction Stop
             
             if ($response.auth -and $response.auth.client_token) {
-                Write-Log "SUCCESS: Vault authentication successful!" -Level "SUCCESS"
+                Write-Log "SUCCESS: Vault authentication successful via HTTP Negotiate!" -Level "SUCCESS"
                 Write-Log "Client token: $($response.auth.client_token)" -Level "INFO"
                 Write-Log "Token TTL: $($response.auth.lease_duration) seconds" -Level "INFO"
-                
                 return $response.auth.client_token
-            } else {
-                Write-Log "ERROR: Authentication response missing required fields" -Level "ERROR"
-                Write-Log "Response: $($response | ConvertTo-Json -Depth 3)" -Level "ERROR"
-                return $null
             }
-            
         } catch {
-            Write-Log "ERROR: Vault authentication request failed" -Level "ERROR"
-            Write-Log "Error details: $($_.Exception.Message)" -Level "ERROR"
-            
-            if ($_.Exception.Response) {
-                $statusCode = $_.Exception.Response.StatusCode
-                Write-Log "HTTP Status Code: $statusCode" -Level "ERROR"
-                
-                try {
-                    $errorStream = $_.Exception.Response.GetResponseStream()
-                    $reader = New-Object System.IO.StreamReader($errorStream)
-                    $errorBody = $reader.ReadToEnd()
-                    Write-Log "Error response body: $errorBody" -Level "ERROR"
-            } catch {
-                    Write-Log "Could not read error response body" -Level "WARNING"
-            }
+            Write-Log "Method 1 failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
-            return $null
+        # Method 2: Try WebRequest with UseDefaultCredentials
+        try {
+            Write-Log "Method 2: Using WebRequest with UseDefaultCredentials..." -Level "INFO"
+            
+            $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+            $request.Method = "POST"
+            $request.UseDefaultCredentials = $true
+            $request.PreAuthenticate = $true
+            $request.UserAgent = "Vault-gMSA-Client/4.0"
+            
+            $response = $request.GetResponse()
+            $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+            $responseBody = $reader.ReadToEnd()
+            $response.Close()
+            
+            $authResponse = $responseBody | ConvertFrom-Json
+            if ($authResponse.auth -and $authResponse.auth.client_token) {
+                Write-Log "SUCCESS: Vault authentication successful via WebRequest!" -Level "SUCCESS"
+                Write-Log "Client token: $($authResponse.auth.client_token)" -Level "INFO"
+                return $authResponse.auth.client_token
+            }
+        } catch {
+            Write-Log "Method 2 failed: $($_.Exception.Message)" -Level "WARNING"
         }
+        
+        # Method 3: Try with explicit role in body (fallback to legacy method)
+        try {
+            Write-Log "Method 3: Trying legacy method with role in body..." -Level "INFO"
+            
+            # First, get SPNEGO token using curl if available
+            if (Get-Command curl -ErrorAction SilentlyContinue) {
+                Write-Log "Using curl to generate SPNEGO token..." -Level "INFO"
+                
+                $curlOutput = curl --negotiate --user : -v "$VaultUrl/v1/sys/health" 2>&1 | Out-String
+                if ($curlOutput -match "Authorization: Negotiate ([A-Za-z0-9+/=]+)") {
+                    $spnegoToken = $matches[1]
+                    Write-Log "SUCCESS: SPNEGO token generated via curl!" -Level "SUCCESS"
+                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
+                    
+                    # Send token in body
+                    $body = @{
+                        role = $Role
+                        spnego = $spnegoToken
+                    } | ConvertTo-Json
+                    
+                    $response = Invoke-RestMethod `
+                        -Uri "$VaultUrl/v1/auth/gmsa/login" `
+                        -Method Post `
+                        -Body $body `
+                        -ContentType "application/json" `
+                        -UseBasicParsing
+                    
+                    if ($response.auth -and $response.auth.client_token) {
+                        Write-Log "SUCCESS: Vault authentication successful via legacy method!" -Level "SUCCESS"
+                        Write-Log "Client token: $($response.auth.client_token)" -Level "INFO"
+                        return $response.auth.client_token
+                    }
+                }
+            }
+        } catch {
+            Write-Log "Method 3 failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        Write-Log "ERROR: All authentication methods failed" -Level "ERROR"
+        return $null
         
     } catch {
         Write-Log "ERROR: Authentication process failed: $($_.Exception.Message)" -Level "ERROR"
@@ -966,7 +186,11 @@ function Get-VaultSecret {
             "X-Vault-Token" = $Token
         }
         
-        $response = Invoke-RestMethod -Uri "$VaultUrl/v1/$SecretPath" -Method Get -Headers $headers -UseBasicParsing
+        $response = Invoke-RestMethod `
+            -Uri "$VaultUrl/v1/$SecretPath" `
+            -Method Get `
+            -Headers $headers `
+            -UseBasicParsing
         
         if ($response.data -and $response.data.data) {
             Write-Log "SUCCESS: Secret retrieved successfully" -Level "SUCCESS"
@@ -990,18 +214,18 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.15 (DSInternals Integration)" -Level "INFO"
+        Write-Log "Script version: 4.0 (HTTP Negotiate Protocol)" -Level "INFO"
         
         # Authenticate to Vault
-        Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
-        $vaultToken = Authenticate-ToVault -VaultUrl $VaultUrl -Role $VaultRole -SPN $SPN
+        Write-Log "Step 1: Authenticating to Vault using HTTP Negotiate..." -Level "INFO"
+        $vaultToken = Authenticate-ToVault -VaultUrl $VaultUrl -Role $VaultRole
         
         if (-not $vaultToken) {
             Write-Log "ERROR: Failed to authenticate to Vault" -Level "ERROR"
             Write-Log "Application cannot continue without valid authentication" -Level "ERROR"
-                return $false
-            }
-            
+            return $false
+        }
+        
         Write-Log "SUCCESS: Vault authentication completed" -Level "SUCCESS"
         
         # Retrieve secrets
@@ -1046,8 +270,9 @@ function Start-VaultClientApplication {
 # =============================================================================
 
 try {
-    Write-Host "Vault gMSA Authentication Client" -ForegroundColor Green
-    Write-Host "=================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Vault gMSA Authentication Client (HTTP Negotiate Protocol)" -ForegroundColor Green
+    Write-Host "============================================================" -ForegroundColor Green
     Write-Host ""
     
     # Start the application
@@ -1066,5 +291,5 @@ try {
 } catch {
     Write-Host "FATAL ERROR: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Stack trace: $($_.Exception.StackTrace)" -ForegroundColor Red
-        exit 1
-    }
+    exit 1
+}
