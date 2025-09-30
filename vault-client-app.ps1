@@ -12,20 +12,23 @@ param(
 # Configuration and Logging Setup
 # =============================================================================
 
-# Bypass SSL certificate validation for testing
-Add-Type @"
-    using System.Net;
-    using System.Security.Cryptography.X509Certificates;
-    public class TrustAllCertsPolicy : ICertificatePolicy {
-        public bool CheckValidationResult(
-            ServicePoint svcPoint, X509Certificate certificate,
-            WebRequest request, int certificateProblem) {
-            return true;
+# Bypass SSL certificate validation for testing (PowerShell 5.1 compatible)
+if (-not ([System.Management.Automation.PSTypeName]'TrustAllCertsPolicy').Type) {
+    Add-Type @"
+        using System.Net;
+        using System.Security.Cryptography.X509Certificates;
+        public class TrustAllCertsPolicy : ICertificatePolicy {
+            public bool CheckValidationResult(
+                ServicePoint svcPoint, X509Certificate certificate,
+                WebRequest request, int certificateProblem) {
+                return true;
+            }
         }
-    }
 "@
+}
 [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
 
 # Create output directory
 if (-not (Test-Path $ConfigOutputDir)) {
@@ -55,7 +58,7 @@ function Write-Log {
 }
 
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 4.0 (HTTP Negotiate Protocol)" -Level "INFO"
+Write-Log "Script version: 4.1 (HTTP Negotiate Protocol - Enhanced SSL & Error Handling)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
 Write-Log "Current user: $(whoami)" -Level "INFO"
@@ -75,13 +78,18 @@ function Authenticate-ToVault {
         Write-Log "Vault URL: $VaultUrl" -Level "INFO"
         Write-Log "Role: $Role" -Level "INFO"
         
-        # Method 1: Try Invoke-RestMethod with UseDefaultCredentials
+        # Method 1: Try Invoke-RestMethod with UseDefaultCredentials (with role in body)
         try {
             Write-Log "Method 1: Using Invoke-RestMethod with UseDefaultCredentials..." -Level "INFO"
+            
+            # Build request body with role
+            $body = @{ role = $Role } | ConvertTo-Json
             
             $response = Invoke-RestMethod `
                 -Uri "$VaultUrl/v1/auth/gmsa/login" `
                 -Method Post `
+                -Body $body `
+                -ContentType "application/json" `
                 -UseDefaultCredentials `
                 -UseBasicParsing `
                 -ErrorAction Stop
@@ -94,21 +102,33 @@ function Authenticate-ToVault {
             }
         } catch {
             Write-Log "Method 1 failed: $($_.Exception.Message)" -Level "WARNING"
+            Write-Log "Method 1 error details: $($_.Exception.InnerException.Message)" -Level "WARNING"
         }
         
-        # Method 2: Try WebRequest with UseDefaultCredentials
+        # Method 2: Try WebRequest with UseDefaultCredentials (with role in body)
         try {
             Write-Log "Method 2: Using WebRequest with UseDefaultCredentials..." -Level "INFO"
             
-            $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+            $request = [System.Net.HttpWebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
             $request.Method = "POST"
             $request.UseDefaultCredentials = $true
             $request.PreAuthenticate = $true
             $request.UserAgent = "Vault-gMSA-Client/4.0"
+            $request.ContentType = "application/json"
+            
+            # Add role in request body
+            $bodyJson = @{ role = $Role } | ConvertTo-Json
+            $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($bodyJson)
+            $request.ContentLength = $bodyBytes.Length
+            
+            $requestStream = $request.GetRequestStream()
+            $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+            $requestStream.Close()
             
             $response = $request.GetResponse()
             $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
             $responseBody = $reader.ReadToEnd()
+            $reader.Close()
             $response.Close()
             
             $authResponse = $responseBody | ConvertFrom-Json
@@ -117,22 +137,37 @@ function Authenticate-ToVault {
                 Write-Log "Client token: $($authResponse.auth.client_token)" -Level "INFO"
                 return $authResponse.auth.client_token
             }
+        } catch [System.Net.WebException] {
+            # Enhanced error handling for web exceptions
+            $errorResponse = $_.Exception.Response
+            if ($errorResponse) {
+                $reader = New-Object System.IO.StreamReader($errorResponse.GetResponseStream())
+                $errorBody = $reader.ReadToEnd()
+                $reader.Close()
+                Write-Log "Method 2 failed with status: $($errorResponse.StatusCode)" -Level "WARNING"
+                Write-Log "Method 2 error body: $errorBody" -Level "WARNING"
+            } else {
+                Write-Log "Method 2 failed: $($_.Exception.Message)" -Level "WARNING"
+            }
         } catch {
             Write-Log "Method 2 failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
-        # Method 3: Try with explicit role in body (fallback to legacy method)
+        # Method 3: Try with explicit curl.exe if available (not PowerShell alias)
         try {
-            Write-Log "Method 3: Trying legacy method with role in body..." -Level "INFO"
+            Write-Log "Method 3: Trying with curl.exe for SPNEGO token generation..." -Level "INFO"
             
-            # First, get SPNEGO token using curl if available
-            if (Get-Command curl -ErrorAction SilentlyContinue) {
-                Write-Log "Using curl to generate SPNEGO token..." -Level "INFO"
+            # Use full path to curl.exe to avoid PowerShell alias
+            $curlPath = "C:\Windows\System32\curl.exe"
+            if (Test-Path $curlPath) {
+                Write-Log "Using curl.exe to generate SPNEGO token..." -Level "INFO"
                 
-                $curlOutput = curl --negotiate --user : -v "$VaultUrl/v1/sys/health" 2>&1 | Out-String
+                # Run curl with --negotiate to generate SPNEGO token
+                $curlOutput = & $curlPath --negotiate --user : -v "$VaultUrl/v1/sys/health" 2>&1 | Out-String
+                
                 if ($curlOutput -match "Authorization: Negotiate ([A-Za-z0-9+/=]+)") {
                     $spnegoToken = $matches[1]
-                    Write-Log "SUCCESS: SPNEGO token generated via curl!" -Level "SUCCESS"
+                    Write-Log "SUCCESS: SPNEGO token generated via curl.exe!" -Level "SUCCESS"
                     Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
                     
                     # Send token in body
@@ -149,17 +184,47 @@ function Authenticate-ToVault {
                         -UseBasicParsing
                     
                     if ($response.auth -and $response.auth.client_token) {
-                        Write-Log "SUCCESS: Vault authentication successful via legacy method!" -Level "SUCCESS"
+                        Write-Log "SUCCESS: Vault authentication successful via curl.exe method!" -Level "SUCCESS"
                         Write-Log "Client token: $($response.auth.client_token)" -Level "INFO"
                         return $response.auth.client_token
                     }
+                } else {
+                    Write-Log "No SPNEGO token found in curl output" -Level "WARNING"
                 }
+            } else {
+                Write-Log "curl.exe not found at $curlPath" -Level "WARNING"
             }
         } catch {
             Write-Log "Method 3 failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
         Write-Log "ERROR: All authentication methods failed" -Level "ERROR"
+        Write-Log "" -Level "ERROR"
+        Write-Log "TROUBLESHOOTING DIAGNOSTICS:" -Level "ERROR"
+        Write-Log "1. Current User: $(whoami)" -Level "ERROR"
+        Write-Log "2. Vault URL: $VaultUrl" -Level "ERROR"
+        Write-Log "3. Target Endpoint: $VaultUrl/v1/auth/gmsa/login" -Level "ERROR"
+        Write-Log "4. SSL Certificate Policy: Bypassed (TrustAllCertsPolicy active)" -Level "ERROR"
+        
+        # Check Kerberos tickets
+        try {
+            $ticketsOutput = klist | Out-String
+            if ($ticketsOutput -match "krbtgt") {
+                Write-Log "5. Kerberos TGT: PRESENT" -Level "INFO"
+            } else {
+                Write-Log "5. Kerberos TGT: MISSING (Run 'kinit' or re-login)" -Level "ERROR"
+            }
+        } catch {
+            Write-Log "5. Kerberos ticket check failed" -Level "ERROR"
+        }
+        
+        Write-Log "" -Level "ERROR"
+        Write-Log "COMMON CAUSES:" -Level "ERROR"
+        Write-Log "- Vault server configuration issues (check if HTTP Negotiate is enabled)" -Level "ERROR"
+        Write-Log "- Network connectivity (verify $VaultUrl is reachable)" -Level "ERROR"
+        Write-Log "- gMSA account permissions (verify SPN registration)" -Level "ERROR"
+        Write-Log "- Vault server logs may show more details" -Level "ERROR"
+        
         return $null
         
     } catch {
