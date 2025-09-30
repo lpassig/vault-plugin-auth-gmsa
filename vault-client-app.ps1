@@ -58,7 +58,7 @@ function Write-Log {
 }
 
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 4.4 (HTTP Negotiate Protocol - curl.exe File-based JSON)" -Level "INFO"
+Write-Log "Script version: 4.5 (HTTP Negotiate Protocol - curl.exe Verbose Debug)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
 Write-Log "Current user: $(whoami)" -Level "INFO"
@@ -178,7 +178,7 @@ function Authenticate-ToVault {
                     "-H", "Content-Type: application/json",
                     "--data-binary", "@$tempJsonFile",  # Use file to avoid shell escaping
                     "-k",  # Skip SSL verification
-                    "-s",  # Silent mode
+                    "-v",  # Verbose mode to see headers (changed from -s)
                     "$VaultUrl/v1/auth/gmsa/login"
                 )
                 
