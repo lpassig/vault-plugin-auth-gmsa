@@ -18,3 +18,4 @@ vault-plugin-auth-gmsa-alpine
 .DS_Store
 .idea/
 .vscode/
+vault-plugin-auth-gmsa-linux
