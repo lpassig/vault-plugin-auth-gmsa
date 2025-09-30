@@ -1,5 +1,5 @@
 param(
-    [string]$VaultAddr = "https://vault.local.lab:8200",
+    [string]$VaultAddr = "http://vault.local.lab:8200",
     [string]$Role = "computer-accounts"
 )
 
