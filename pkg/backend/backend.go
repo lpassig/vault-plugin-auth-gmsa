@@ -98,6 +98,7 @@ func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend,
 		// Help describes the purpose and security model at a high level
 		Help:        "Authenticate Windows workloads via gMSA (Kerberos/Negotiate). Authorization via roles to Vault policies.",
 		BackendType: logical.TypeCredential, // This is an authentication backend
+		
 		PathsSpecial: &logical.Paths{
 			// Login endpoint is unauthenticated (no token required)
 			Unauthenticated: []string{"login"},

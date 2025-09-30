@@ -19,8 +19,8 @@ func pathsLogin(b *gmsaBackend) []*framework.Path {
 			Pattern:      "login",
 			HelpSynopsis: "Authenticate using a SPNEGO token (base64). Enforces optional TLS channel binding if configured.",
 			Fields: map[string]*framework.FieldSchema{
-				"role":    {Type: framework.TypeString, Description: "Role name to use for authorization.", Required: true},
-				"spnego":  {Type: framework.TypeString, Description: "Base64-encoded SPNEGO token.", Required: true},
+				"role":    {Type: framework.TypeString, Description: "Role name to use for authorization. Optional if using Authorization header.", Required: false},
+				"spnego":  {Type: framework.TypeString, Description: "Base64-encoded SPNEGO token. Optional if using Authorization header.", Required: false},
 				"cb_tlse": {Type: framework.TypeString, Description: "Optional TLS channel binding (tls-server-end-point) hex/base64."},
 			},
 			Operations: map[logical.Operation]framework.OperationHandler{
@@ -46,6 +46,23 @@ func (b *gmsaBackend) handleLogin(ctx context.Context, req *logical.Request, d *
 	roleName := d.Get("role").(string)
 	spnegoB64 := d.Get("spnego").(string)
 	cb := d.Get("cb_tlse").(string)
+
+	// CRITICAL FIX: Support HTTP Authorization header like official Kerberos plugin
+	// Check if Authorization header contains SPNEGO token (HTTP Negotiate protocol)
+	if spnegoB64 == "" && req.Headers != nil {
+		authHeader := req.Headers["Authorization"]
+		if len(authHeader) > 0 && len(authHeader[0]) > 10 && authHeader[0][:10] == "Negotiate " {
+			// Extract SPNEGO token from "Authorization: Negotiate <token>" header
+			spnegoB64 = authHeader[0][10:] // Remove "Negotiate " prefix
+			b.logger.Info("SPNEGO token extracted from Authorization header", "token_length", len(spnegoB64))
+		}
+	}
+
+	// If no role specified, use default role name "default" (must be created by admin)
+	if roleName == "" {
+		roleName = "default"
+		b.logger.Info("No role specified, using default role", "role", roleName)
+	}
 
 	// Enhanced input validation
 	if err := b.validateLoginInput(roleName, spnegoB64, cb); err != nil {
