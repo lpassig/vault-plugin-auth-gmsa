@@ -498,12 +498,28 @@ function Step6-ConfigureVault {
     Write-Host "Run these commands on your Vault server:" -ForegroundColor Yellow
     Write-Host ""
     
-    Write-Host "# Copy keytab to Vault server" -ForegroundColor Cyan
-    Write-Command "scp $keytabB64File user@${VaultServer}:/tmp/"
-    Write-Host ""
-    
-    Write-Host "# Configure Vault auth method with AUTO-ROTATION" -ForegroundColor Cyan
-    Write-Host @"
+    # Different instructions based on whether keytab was pasted or is a file
+    if ($keytabB64File -eq "(pasted)") {
+        Write-Host "# The keytab content is already available (pasted above)" -ForegroundColor Cyan
+        Write-Host "# Configure Vault auth method with AUTO-ROTATION using the pasted content:" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "vault write auth/gmsa/config \" -ForegroundColor White
+        Write-Host "  realm=`"$Realm`" \" -ForegroundColor White
+        Write-Host "  kdcs=`"addc.$($Realm.ToLower())`" \" -ForegroundColor White
+        Write-Host "  spn=`"$SPN`" \" -ForegroundColor White
+        Write-Host "  keytab=`"$keytabB64`" \" -ForegroundColor White
+        Write-Host "  clock_skew_sec=300 \" -ForegroundColor White
+        Write-Host "  allow_channel_binding=true \" -ForegroundColor White
+        Write-Host "  enable_rotation=true \" -ForegroundColor White
+        Write-Host "  rotation_threshold=5d \" -ForegroundColor White
+        Write-Host "  backup_keytabs=true" -ForegroundColor White
+    } else {
+        Write-Host "# Copy keytab to Vault server" -ForegroundColor Cyan
+        Write-Command "scp $keytabB64File user@${VaultServer}:/tmp/"
+        Write-Host ""
+        
+        Write-Host "# Configure Vault auth method with AUTO-ROTATION" -ForegroundColor Cyan
+        Write-Host @"
 vault write auth/gmsa/config \
   realm="$Realm" \
   kdcs="addc.$($Realm.ToLower())" \
@@ -515,6 +531,7 @@ vault write auth/gmsa/config \
   rotation_threshold=5d \
   backup_keytabs=true
 "@ -ForegroundColor White
+    }
     
     Write-Host ""
     Write-Host "# Verify configuration" -ForegroundColor Cyan
