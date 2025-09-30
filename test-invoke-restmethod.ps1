@@ -134,11 +134,20 @@ try {
         Write-Log "This approach automatically generates SPNEGO tokens via Windows SSPI" "SUCCESS"
         Write-Log "" "SUCCESS"
         
+        Write-Host ""
+        Write-Host "Press any key to exit..." -ForegroundColor Cyan
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        
         exit 0
         
     } else {
         Write-Log "Unexpected response format - no auth.client_token" "ERROR"
         Write-Log "Response: $($response | ConvertTo-Json -Depth 10)" "ERROR"
+        
+        Write-Host ""
+        Write-Host "Press any key to exit..." -ForegroundColor Cyan
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        
         exit 1
     }
     
@@ -181,9 +190,18 @@ try {
     Write-Log "   vault read auth/kerberos/role/$Role" "INFO"
     Write-Log "" "INFO"
     
+    Write-Host ""
+    Write-Host "Press any key to exit..." -ForegroundColor Cyan
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    
     exit 1
 }
 
 # This should not be reached
 Write-Log "Unexpected script flow" "ERROR"
+
+Write-Host ""
+Write-Host "Press any key to exit..." -ForegroundColor Cyan
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
 exit 1
