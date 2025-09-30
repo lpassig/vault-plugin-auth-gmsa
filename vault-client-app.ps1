@@ -818,12 +818,12 @@ function Request-KerberosTicket {
             }
             
             return $false
-            }
-            
-        } catch {
+        }
+        
+    } catch {
         Write-Log "Kerberos ticket request failed: $($_.Exception.Message)" -Level "ERROR"
         return $false
-        }
+    }
 }
 
 # =============================================================================
