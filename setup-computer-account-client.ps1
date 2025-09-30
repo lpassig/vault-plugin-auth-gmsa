@@ -57,66 +57,12 @@ if ($LASTEXITCODE -eq 0) {
     schtasks /Delete /TN "$taskName" /F | Out-Null
 }
 
-# Create scheduled task XML
-$taskXml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>$taskDescription</Description>
-  </RegistrationInfo>
-  <Triggers>
-    <CalendarTrigger>
-      <Repetition>
-        <Interval>PT1H</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-      <StartBoundary>2025-01-01T00:00:00</StartBoundary>
-      <Enabled>true</Enabled>
-      <ScheduleByDay>
-        <DaysInterval>1</DaysInterval>
-      </ScheduleByDay>
-    </CalendarTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
-    <Priority>7</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>powershell.exe</Command>
-      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "$ScriptPath" -VaultUrl "$VaultUrl" -Role "$Role"</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
+# Create scheduled task using schtasks command (avoid XML parsing issues)
+# Build the task using schtasks /Create with parameters
+$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -VaultUrl `"$VaultUrl`" -Role `"$Role`""
 
-# Save task XML to temp file
-$tempXml = "$env:TEMP\vault-task.xml"
-$taskXml | Out-File -FilePath $tempXml -Encoding Unicode -Force
-
-# Register the task
-schtasks /Create /TN "$taskName" /XML $tempXml /F | Out-Null
+# Create the task with basic settings
+schtasks /Create /TN "$taskName" /TR "$action" /SC HOURLY /RU "NT AUTHORITY\SYSTEM" /RL HIGHEST /F | Out-Null
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  ✓ Scheduled task created: $taskName" -ForegroundColor Green
@@ -126,9 +72,6 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "  ✗ Failed to create scheduled task!" -ForegroundColor Red
     exit 1
 }
-
-# Clean up temp file
-Remove-Item -Path $tempXml -Force -ErrorAction SilentlyContinue
 
 # Step 4: Verify setup
 Write-Host ""
