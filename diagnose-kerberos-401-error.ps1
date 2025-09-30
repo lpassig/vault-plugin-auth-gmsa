@@ -99,7 +99,6 @@ try {
     } catch {
         Write-Host "⚠ Could not check auth methods (may need token)" -ForegroundColor Yellow
     }
-    
 } catch {
     Write-Host "❌ Cannot reach Vault server: $_" -ForegroundColor Red
 }
@@ -129,7 +128,6 @@ try {
             Write-Host "✓ Token received: $($responseData.auth.client_token.Substring(0,20))..." -ForegroundColor Green
         }
     }
-    
 } catch {
     $errorResponse = $_.Exception.Response
     if ($errorResponse) {

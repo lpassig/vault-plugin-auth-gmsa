@@ -97,7 +97,6 @@ try {
             Write-Host "✓ Token received: $($responseData.auth.client_token.Substring(0,20))..." -ForegroundColor Green
         }
     }
-    
 } catch {
     $errorResponse = $_.Exception.Response
     if ($errorResponse) {
