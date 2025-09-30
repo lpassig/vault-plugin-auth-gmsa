@@ -58,7 +58,7 @@ function Write-Log {
 }
 
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 4.1 (HTTP Negotiate Protocol - Enhanced SSL & Error Handling)" -Level "INFO"
+Write-Log "Script version: 4.2 (HTTP Negotiate Protocol - curl.exe Direct Auth)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
 Write-Log "Current user: $(whoami)" -Level "INFO"
@@ -153,43 +153,50 @@ function Authenticate-ToVault {
             Write-Log "Method 2 failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
-        # Method 3: Try with explicit curl.exe if available (not PowerShell alias)
+        # Method 3: Direct authentication using curl.exe with --negotiate (CRITICAL FIX)
         try {
-            Write-Log "Method 3: Trying with curl.exe for SPNEGO token generation..." -Level "INFO"
+            Write-Log "Method 3: Using curl.exe with --negotiate for direct authentication..." -Level "INFO"
             
             # Use full path to curl.exe to avoid PowerShell alias
             $curlPath = "C:\Windows\System32\curl.exe"
             if (Test-Path $curlPath) {
-                Write-Log "Using curl.exe to generate SPNEGO token..." -Level "INFO"
+                Write-Log "curl.exe found, attempting direct authentication..." -Level "INFO"
                 
-                # Run curl with --negotiate to generate SPNEGO token
-                $curlOutput = & $curlPath --negotiate --user : -v "$VaultUrl/v1/sys/health" 2>&1 | Out-String
+                # Create request body with role
+                $bodyJson = @{ role = $Role } | ConvertTo-Json
                 
-                if ($curlOutput -match "Authorization: Negotiate ([A-Za-z0-9+/=]+)") {
-                    $spnegoToken = $matches[1]
-                    Write-Log "SUCCESS: SPNEGO token generated via curl.exe!" -Level "SUCCESS"
-                    Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                    
-                    # Send token in body
-                    $body = @{
-                        role = $Role
-                        spnego = $spnegoToken
-                    } | ConvertTo-Json
-                    
-                    $response = Invoke-RestMethod `
-                        -Uri "$VaultUrl/v1/auth/gmsa/login" `
-                        -Method Post `
-                        -Body $body `
-                        -ContentType "application/json" `
-                        -UseBasicParsing
-                    
-                    if ($response.auth -and $response.auth.client_token) {
-                        Write-Log "SUCCESS: Vault authentication successful via curl.exe method!" -Level "SUCCESS"
-                        Write-Log "Client token: $($response.auth.client_token)" -Level "INFO"
-                        return $response.auth.client_token
+                # Use curl.exe with --negotiate to authenticate directly
+                # curl will automatically generate and send SPNEGO token via Windows SSPI
+                $curlArgs = @(
+                    "--negotiate",
+                    "--user", ":",
+                    "-X", "POST",
+                    "-H", "Content-Type: application/json",
+                    "-d", $bodyJson,
+                    "-k",  # Skip SSL verification
+                    "-s",  # Silent mode
+                    "$VaultUrl/v1/auth/gmsa/login"
+                )
+                
+                Write-Log "Executing: curl.exe $($curlArgs -join ' ')" -Level "INFO"
+                $curlOutput = & $curlPath $curlArgs 2>&1 | Out-String
+                Write-Log "curl.exe output: $curlOutput" -Level "INFO"
+                
+                # Parse JSON response
+                try {
+                    $authResponse = $curlOutput | ConvertFrom-Json
+                    if ($authResponse.auth -and $authResponse.auth.client_token) {
+                        Write-Log "SUCCESS: Vault authentication successful via curl.exe with --negotiate!" -Level "SUCCESS"
+                        Write-Log "Client token: $($authResponse.auth.client_token)" -Level "INFO"
+                        Write-Log "Token TTL: $($authResponse.auth.lease_duration) seconds" -Level "INFO"
+                        return $authResponse.auth.client_token
+                    } else {
+                        Write-Log "curl.exe succeeded but no token in response" -Level "WARNING"
+                        Write-Log "Response: $curlOutput" -Level "WARNING"
                     }
-                } else {
-                    Write-Log "No SPNEGO token found in curl output" -Level "WARNING"
+                } catch {
+                    Write-Log "Failed to parse curl.exe response as JSON: $($_.Exception.Message)" -Level "WARNING"
+                    Write-Log "Raw output: $curlOutput" -Level "WARNING"
                 }
             } else {
                 Write-Log "curl.exe not found at $curlPath" -Level "WARNING"
