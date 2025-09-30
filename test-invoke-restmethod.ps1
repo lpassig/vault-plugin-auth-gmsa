@@ -105,19 +105,12 @@ try {
         
         # Test using the token to get a secret
         Write-Log "Testing token by retrieving a secret..." "INFO"
+        $secretResponse = $null
         try {
-            $secretResponse = Invoke-RestMethod -Uri "$VaultAddr/v1/secret/data/app/config" `
-                -Method GET `
-                -Headers @{
-                    "X-Vault-Token" = $response.auth.client_token
-                } `
-                -TimeoutSec 10 `
-                -ErrorAction Stop
-            
+            $secretResponse = Invoke-RestMethod -Uri "$VaultAddr/v1/secret/data/app/config" -Method GET -Headers @{"X-Vault-Token" = $response.auth.client_token} -TimeoutSec 10 -ErrorAction Stop
             Write-Log "✓ Token is valid - successfully retrieved secret" "SUCCESS"
             Write-Log "Secret keys: $($secretResponse.data.data.Keys -join ', ')" "INFO"
-        }
-        catch {
+        } catch {
             if ($_.Exception.Message -match "404") {
                 Write-Log "Note: Secret path doesn't exist (this is OK for testing)" "INFO"
             } else {
