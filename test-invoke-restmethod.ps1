@@ -41,7 +41,8 @@ Write-Log "Checking Kerberos tickets..." "INFO"
 try {
     $tickets = klist 2>&1 | Out-String
     Write-Log $tickets "INFO"
-} catch {
+}
+catch {
     Write-Log "Warning: Could not run klist: $($_.Exception.Message)" "WARNING"
 }
 Write-Log "" "INFO"
@@ -80,16 +81,7 @@ try {
     
     Write-Log "Executing Invoke-RestMethod..." "INFO"
     
-    $response = Invoke-RestMethod -Uri "$VaultAddr/v1/auth/kerberos/login" `
-        -Method POST `
-        -UseDefaultCredentials `
-        -Headers @{
-            "Authorization" = "Negotiate"
-        } `
-        -Body $requestBody `
-        -ContentType "application/json" `
-        -TimeoutSec 30 `
-        -ErrorAction Stop
+    $response = Invoke-RestMethod -Uri "$VaultAddr/v1/auth/kerberos/login" -Method POST -UseDefaultCredentials -Headers @{"Authorization" = "Negotiate"} -Body $requestBody -ContentType "application/json" -TimeoutSec 30 -ErrorAction Stop
     
     Write-Log "" "SUCCESS"
     Write-Log "========================================" "SUCCESS"
@@ -110,10 +102,12 @@ try {
             $secretResponse = Invoke-RestMethod -Uri "$VaultAddr/v1/secret/data/app/config" -Method GET -Headers @{"X-Vault-Token" = $response.auth.client_token} -TimeoutSec 10 -ErrorAction Stop
             Write-Log "✓ Token is valid - successfully retrieved secret" "SUCCESS"
             Write-Log "Secret keys: $($secretResponse.data.data.Keys -join ', ')" "INFO"
-        } catch {
+        }
+        catch {
             if ($_.Exception.Message -match "404") {
                 Write-Log "Note: Secret path doesn't exist (this is OK for testing)" "INFO"
-            } else {
+            }
+            else {
                 Write-Log "Warning: Could not retrieve secret: $($_.Exception.Message)" "WARNING"
             }
         }
@@ -132,8 +126,8 @@ try {
         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         
         exit 0
-        
-    } else {
+    }
+    else {
         Write-Log "Unexpected response format - no auth.client_token" "ERROR"
         Write-Log "Response: $($response | ConvertTo-Json -Depth 10)" "ERROR"
         
@@ -162,7 +156,8 @@ catch {
             $responseBody = $reader.ReadToEnd()
             $reader.Close()
             Write-Log "Response body: $responseBody" "ERROR"
-        } catch {
+        }
+        catch {
             Write-Log "Could not read response body" "ERROR"
         }
     }
@@ -179,8 +174,8 @@ catch {
     Write-Log "3. Verify Kerberos configuration on Vault:" "INFO"
     Write-Log "   vault read auth/kerberos/config" "INFO"
     Write-Log "" "INFO"
-    Write-Log "4. Check if role exists:" "INFO"
-    Write-Log "   vault read auth/kerberos/role/$Role" "INFO"
+    Write-Log "4. Check if group exists:" "INFO"
+    Write-Log "   vault list auth/kerberos/groups" "INFO"
     Write-Log "" "INFO"
     
     Write-Host ""
