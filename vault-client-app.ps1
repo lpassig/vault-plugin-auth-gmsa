@@ -147,33 +147,33 @@ try {
     
     # Only apply hostname mapping if using hostname-based SPN
     if ($SPN -like "HTTP/vault.local.lab") {
-        # Check if vault.local.lab resolves
-        try {
-            $dnsResult = [System.Net.Dns]::GetHostAddresses("vault.local.lab")
-            Write-Host "vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
-        } catch {
-            Write-Host "WARNING: vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
-            
-            # Add to Windows hosts file
-            $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-            $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultIP vault.local.lab"
-            
-            # Check if entry already exists
-            $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
-            if ($hostsContent -notcontains "$vaultIP vault.local.lab") {
-                Add-Content -Path $hostsPath -Value $hostsEntry -Force
+    # Check if vault.local.lab resolves
+    try {
+        $dnsResult = [System.Net.Dns]::GetHostAddresses("vault.local.lab")
+        Write-Host "vault.local.lab already resolves to: $($dnsResult[0].IPAddressToString)" -ForegroundColor Green
+    } catch {
+        Write-Host "WARNING: vault.local.lab does not resolve, applying hostname fix..." -ForegroundColor Yellow
+        
+        # Add to Windows hosts file
+        $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+        $hostsEntry = "`n# Vault gMSA DNS fix`n$vaultIP vault.local.lab"
+        
+        # Check if entry already exists
+        $hostsContent = Get-Content $hostsPath -ErrorAction SilentlyContinue
+        if ($hostsContent -notcontains "$vaultIP vault.local.lab") {
+            Add-Content -Path $hostsPath -Value $hostsEntry -Force
                 Write-Host "SUCCESS: Added '$vaultIP vault.local.lab' to hosts file" -ForegroundColor Green
-            } else {
+        } else {
                 Write-Host "Hosts entry already exists" -ForegroundColor Green
-            }
-            
-            # Flush DNS cache
-            try {
-                ipconfig /flushdns | Out-Null
-                Write-Host "SUCCESS: DNS cache flushed" -ForegroundColor Green
-            } catch {
-                Write-Host "WARNING: Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
-            }
+        }
+        
+        # Flush DNS cache
+        try {
+            ipconfig /flushdns | Out-Null
+            Write-Host "SUCCESS: DNS cache flushed" -ForegroundColor Green
+        } catch {
+            Write-Host "WARNING: Could not flush DNS cache (may need admin rights)" -ForegroundColor Yellow
+        }
         }
     } else {
         Write-Host "Using IP-based SPN: $SPN - no hostname mapping needed" -ForegroundColor Green
@@ -255,7 +255,7 @@ if ([string]::IsNullOrEmpty($SPN)) {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 3.12 (Multi-Endpoint SPNEGO Trigger)" -Level "INFO"
+Write-Log "Script version: 3.14 (Enhanced Token Debugging)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
@@ -296,7 +296,7 @@ function Get-SPNEGOTokenFromSSPI {
         
         if ($result -ne [SSPI]::SEC_E_OK) {
             Write-Log "ERROR: AcquireCredentialsHandle failed with result: 0x$($result.ToString('X8'))" -Level "ERROR"
-            return $null
+        return $null
         }
         
         Write-Log "SUCCESS: Credentials handle acquired" -Level "SUCCESS"
@@ -445,7 +445,7 @@ function Get-SPNEGOTokenPInvoke {
                         Write-Log "WARNING: Service ticket request may have failed" -Level "WARNING"
                         Write-Log "Proceeding with TGT - Windows SSPI may generate service ticket on-demand" -Level "INFO"
                     }
-                } catch {
+            } catch {
                     Write-Log "Service ticket request failed: $($_.Exception.Message)" -Level "WARNING"
                     Write-Log "Proceeding with TGT - Windows SSPI may generate service ticket on-demand" -Level "INFO"
                 }
@@ -503,10 +503,12 @@ function Get-SPNEGOTokenPInvoke {
                         Write-Log "Step 2: Generating SPNEGO token using Windows SSPI..." -Level "INFO"
                         
                         $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN -ChallengeToken $challengeToken
-                        if ($spnegoToken) {
+                        if ($spnegoToken -and $spnegoToken -ne $null -and $spnegoToken -ne "") {
                             Write-Log "SUCCESS: SPNEGO token generated via HTTP Negotiate flow!" -Level "SUCCESS"
                             $initialResponse.Close()
                             return $spnegoToken
+        } else {
+                            Write-Log "HTTP Negotiate flow returned null or empty token" -Level "WARNING"
                         }
                     }
                 } else {
@@ -554,11 +556,13 @@ function Get-SPNEGOTokenPInvoke {
             Write-Log "Method 2: Fallback - Direct SPNEGO token generation using Windows SSPI..." -Level "INFO"
             
             $spnegoToken = Get-SPNEGOTokenFromSSPI -TargetSPN $TargetSPN
-            if ($spnegoToken) {
+            if ($spnegoToken -and $spnegoToken -ne $null -and $spnegoToken -ne "") {
                 Write-Log "SUCCESS: SPNEGO token generated via direct SSPI method!" -Level "SUCCESS"
                 return $spnegoToken
+            } else {
+                Write-Log "Direct SSPI method returned null or empty token" -Level "WARNING"
             }
-        } catch {
+    } catch {
             Write-Log "Direct SSPI method failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
@@ -626,8 +630,8 @@ function Get-SPNEGOTokenPInvoke {
                                 $spnegoToken = $authHeader.Substring(9)  # Remove "Negotiate " prefix
                                 Write-Log "SUCCESS: Captured SPNEGO token from endpoint $endpoint!" -Level "SUCCESS"
                                 Write-Log "Token length: $($spnegoToken.Length) characters" -Level "INFO"
-                                return $spnegoToken
-                            }
+                return $spnegoToken
+            }
                         }
                     }
                 }
@@ -649,9 +653,10 @@ function Get-SPNEGOTokenPInvoke {
         Write-Log "" -Level "ERROR"
         Write-Log "REFERENCES:" -Level "ERROR"
         Write-Log "- Microsoft SPNEGO Protocol: https://learn.microsoft.com/en-us/previous-versions/ms995331(v=msdn.10)" -Level "ERROR"
-        Write-Log "- Veridium SPNEGO Configuration: https://docs.veridiumid.com/docs/v3.8/spnego-configuration-steps" -Level "ERROR"
-        
-        return $null
+        Write-Log "Debug: About to return null from Get-SPNEGOTokenPInvoke" -Level "DEBUG"
+        $nullValue = $null
+        Write-Log "Debug: Returning null value: $nullValue" -Level "DEBUG"
+        return $nullValue
         
     } catch {
         Write-Log "SPNEGO token generation failed: $($_.Exception.Message)" -Level "WARNING"
@@ -697,7 +702,7 @@ function Request-KerberosTicket {
             # Extract hostname from SPN for HTTP request
             if ($TargetSPN -match "HTTP/(.+)") {
                 $hostname = $matches[1]
-            } else {
+        } else {
                 $hostname = $TargetSPN
             }
             
@@ -715,8 +720,8 @@ function Request-KerberosTicket {
                     Write-Log "SUCCESS: Service ticket request completed" -Level "SUCCESS"
                 } else {
                     Write-Log "Service ticket request failed with exit code: $LASTEXITCODE" -Level "WARNING"
-                }
-            } catch {
+                    }
+                } catch {
                 Write-Log "klist service ticket request failed: $($_.Exception.Message)" -Level "WARNING"
             }
             
@@ -757,12 +762,12 @@ function Request-KerberosTicket {
                     if ($statusCode -eq 401) {
                         Write-Log "SUCCESS: 401 Unauthorized - Service ticket request triggered" -Level "SUCCESS"
                     }
-                } else {
+        } else {
                     Write-Log "Invoke-WebRequest failed with non-HTTP error: $($_.Exception.Message)" -Level "WARNING"
                 }
             }
             
-        } catch {
+    } catch {
             Write-Log "SSPI ticket request failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
@@ -785,7 +790,7 @@ function Request-KerberosTicket {
                     Write-Log "WebClient request failed: $($_.Exception.Message)" -Level "INFO"
                 }
             }
-        } catch {
+    } catch {
             Write-Log "PowerShell Kerberos method failed: $($_.Exception.Message)" -Level "WARNING"
         }
         
@@ -813,12 +818,12 @@ function Request-KerberosTicket {
             }
             
             return $false
-        }
-        
-    } catch {
+            }
+            
+        } catch {
         Write-Log "Kerberos ticket request failed: $($_.Exception.Message)" -Level "ERROR"
         return $false
-    }
+        }
 }
 
 # =============================================================================
@@ -842,11 +847,9 @@ function Authenticate-ToVault {
         Write-Log "Generating SPNEGO token..." -Level "INFO"
         $spnegoToken = Get-SPNEGOTokenPInvoke -TargetSPN $SPN -VaultUrl $VaultUrl
         
-        if (-not $spnegoToken) {
-            Write-Log "ERROR: Failed to generate SPNEGO token" -Level "ERROR"
-            Write-Log "Cannot proceed with authentication without a valid SPNEGO token" -Level "ERROR"
-            return $null
-        }
+        Write-Log "Debug: SPNEGO token generation result: $($spnegoToken | Get-Member)" -Level "DEBUG"
+        Write-Log "Debug: SPNEGO token value: $spnegoToken" -Level "DEBUG"
+        Write-Log "Debug: SPNEGO token type: $($spnegoToken.GetType())" -Level "DEBUG"
         
         # Validate token format
         if ($spnegoToken -is [array] -or $spnegoToken -is [System.Collections.ArrayList]) {
@@ -905,11 +908,11 @@ function Authenticate-ToVault {
                     $reader = New-Object System.IO.StreamReader($errorStream)
                     $errorBody = $reader.ReadToEnd()
                     Write-Log "Error response body: $errorBody" -Level "ERROR"
-                } catch {
+            } catch {
                     Write-Log "Could not read error response body" -Level "WARNING"
-                }
             }
-            
+        }
+        
             return $null
         }
         
@@ -961,7 +964,7 @@ function Get-VaultSecret {
 function Start-VaultClientApplication {
     try {
         Write-Log "Starting Vault Client Application..." -Level "INFO"
-        Write-Log "Script version: 3.13 (Microsoft SPNEGO Protocol Implementation)" -Level "INFO"
+        Write-Log "Script version: 3.14 (Enhanced Token Debugging)" -Level "INFO"
         
         # Authenticate to Vault
         Write-Log "Step 1: Authenticating to Vault..." -Level "INFO"
@@ -970,9 +973,9 @@ function Start-VaultClientApplication {
         if (-not $vaultToken) {
             Write-Log "ERROR: Failed to authenticate to Vault" -Level "ERROR"
             Write-Log "Application cannot continue without valid authentication" -Level "ERROR"
-            return $false
-        }
-        
+                return $false
+            }
+            
         Write-Log "SUCCESS: Vault authentication completed" -Level "SUCCESS"
         
         # Retrieve secrets
@@ -1037,5 +1040,5 @@ try {
 } catch {
     Write-Host "FATAL ERROR: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Stack trace: $($_.Exception.StackTrace)" -ForegroundColor Red
-    exit 1
-}
+        exit 1
+    }
