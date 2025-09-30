@@ -65,6 +65,7 @@ ktpass -princ HTTP/vault.local.lab@LOCAL.LAB `
     -mapuser LOCAL\vault-gmsa$ `
     -crypto AES256-SHA1 `
     -ptype KRB5_NT_PRINCIPAL `
+    -pass * `
     -out vault-gmsa.keytab
 
 Write-Host ""
