@@ -30,14 +30,7 @@ try {
     Write-Log "Role: $Role" "INFO"
     Write-Log "" "INFO"
 
-    # Purge old Kerberos tickets and get fresh ones
-    Write-Log "Purging old Kerberos tickets..." "INFO"
-    klist purge 2>&1 | Out-Null
-    Write-Log "Getting fresh TGT..." "INFO"
-    klist get krbtgt 2>&1 | Out-Null
-    Write-Log "" "INFO"
-
-    # Check Kerberos tickets
+    # Check Kerberos tickets (don't purge - computer accounts need existing tickets)
     Write-Log "Checking Kerberos tickets..." "INFO"
     $tickets = klist 2>&1 | Out-String
     Write-Log $tickets "INFO"
