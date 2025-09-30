@@ -38,8 +38,8 @@ try {
 }
 Write-Host ""
 
-# Prepare request body
-$bodyJson = @{ role = $Role } | ConvertTo-Json
+# Prepare request body (compact JSON, no formatting)
+$bodyJson = @{ role = $Role } | ConvertTo-Json -Compress
 Write-Host "Request Body: $bodyJson" -ForegroundColor Yellow
 Write-Host ""
 

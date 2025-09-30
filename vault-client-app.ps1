@@ -58,7 +58,7 @@ function Write-Log {
 }
 
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 4.2 (HTTP Negotiate Protocol - curl.exe Direct Auth)" -Level "INFO"
+Write-Log "Script version: 4.3 (HTTP Negotiate Protocol - curl.exe Fixed JSON)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Vault URL: $VaultUrl" -Level "INFO"
 Write-Log "Current user: $(whoami)" -Level "INFO"
@@ -162,8 +162,8 @@ function Authenticate-ToVault {
             if (Test-Path $curlPath) {
                 Write-Log "curl.exe found, attempting direct authentication..." -Level "INFO"
                 
-                # Create request body with role
-                $bodyJson = @{ role = $Role } | ConvertTo-Json
+                # Create request body with role (compact JSON, no formatting)
+                $bodyJson = (@{ role = $Role } | ConvertTo-Json -Compress)
                 
                 # Use curl.exe with --negotiate to authenticate directly
                 # curl will automatically generate and send SPNEGO token via Windows SSPI
