@@ -445,14 +445,54 @@ function Step6-ConfigureVault {
     Write-Info "This step configures Vault on the server side"
     Write-Host ""
     
-    $keytabB64File = "vault-gmsa.keytab.b64"
+    # Look for keytab files in order of preference
+    $keytabB64File = $null
+    $keytabB64 = $null
     
-    if (Test-Path $keytabB64File) {
-        $keytabB64 = Get-Content $keytabB64File -Raw
-    } else {
-        Write-Error "Keytab file not found: $keytabB64File"
-        Write-Info "Generate the keytab first (Step 3) or use existing vault-keytab-svc keytab"
-        return $false
+    $possibleKeytabs = @(
+        "vault-gmsa.keytab.b64",           # Generated for gMSA
+        "vault-keytab-svc.keytab.b64",     # Existing service account keytab
+        "vault.keytab.b64"                 # Generic keytab
+    )
+    
+    foreach ($file in $possibleKeytabs) {
+        if (Test-Path $file) {
+            $keytabB64File = $file
+            $keytabB64 = Get-Content $file -Raw
+            Write-Success "Found keytab file: $keytabB64File"
+            break
+        }
+    }
+    
+    if (-not $keytabB64File) {
+        Write-Error "No keytab file found"
+        Write-Host ""
+        Write-Host "Searched for:" -ForegroundColor Yellow
+        $possibleKeytabs | ForEach-Object { Write-Host "  - $_" -ForegroundColor Gray }
+        Write-Host ""
+        Write-Info "Note: For gMSA, ktpass often doesn't create a keytab when you answer 'n'"
+        Write-Info "This is expected - Vault's auto-rotation will generate keytabs automatically"
+        Write-Host ""
+        Write-Info "You can use the existing vault-keytab-svc keytab temporarily:"
+        Write-Host ""
+        Write-Host "Option 1: Copy existing keytab" -ForegroundColor Cyan
+        Write-Command "Copy-Item vault-keytab-svc.keytab.b64 vault-gmsa.keytab.b64"
+        Write-Host ""
+        Write-Host "Option 2: Provide the keytab content directly to Vault" -ForegroundColor Cyan
+        Write-Info "The auto-rotation feature will replace it with a proper gMSA keytab"
+        Write-Host ""
+        
+        # Ask user if they want to continue anyway
+        Write-Host "Do you have the keytab content (base64) to paste? (y/n): " -NoNewline -ForegroundColor Yellow
+        $response = Read-Host
+        
+        if ($response -eq 'y' -or $response -eq 'Y') {
+            Write-Host "Paste the base64 keytab content and press Enter:" -ForegroundColor Yellow
+            $keytabB64 = Read-Host
+            $keytabB64File = "(pasted)"
+        } else {
+            return $false
+        }
     }
     
     Write-Host "Run these commands on your Vault server:" -ForegroundColor Yellow
