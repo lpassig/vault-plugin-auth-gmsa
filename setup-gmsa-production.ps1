@@ -612,7 +612,7 @@ if ($Step -eq 'all') {
     Write-Info "Running ALL steps (1-7)..."
     Write-Host ""
     
-    $steps = @(
+    $stepList = @(
         @{ Name = "Create gMSA"; Function = ${function:Step1-CreateGMSA} },
         @{ Name = "Move SPN"; Function = ${function:Step2-MoveSPN} },
         @{ Name = "Generate Keytab"; Function = ${function:Step3-GenerateKeytab} },
@@ -624,11 +624,11 @@ if ($Step -eq 'all') {
     
     $success = $true
     
-    foreach ($step in $steps) {
-        $result = & $step.Function
+    foreach ($stepItem in $stepList) {
+        $result = & $stepItem.Function
         
         if (-not $result) {
-            Write-Error "Step failed: $($step.Name)"
+            Write-Error "Step failed: $($stepItem.Name)"
             $success = $false
             break
         }
