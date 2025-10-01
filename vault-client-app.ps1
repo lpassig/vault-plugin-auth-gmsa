@@ -103,7 +103,7 @@ function Write-Log {
 
 # Test logging immediately
 Write-Log "Script initialization completed successfully" -Level "INFO"
-Write-Log "Script version: 4.0 (Real SPNEGO with curl)" -Level "INFO"
+Write-Log "Script version: 4.1 (HTTP Negotiate Protocol)" -Level "INFO"
 Write-Log "Config directory: $ConfigOutputDir" -Level "INFO"
 Write-Log "Log file location: $ConfigOutputDir\vault-client.log" -Level "INFO"
 
@@ -735,6 +735,99 @@ function Get-SPNEGOToken {
 # Vault Authentication
 # =============================================================================
 
+function Invoke-VaultAuthenticationHTTPNegotiate {
+    param(
+        [string]$VaultUrl,
+        [string]$Role
+    )
+    
+    try {
+        Write-Log "Authenticating with Vault using HTTP Negotiate protocol..." -Level "INFO"
+        Write-Log "Vault URL: $VaultUrl" -Level "INFO"
+        Write-Log "Role: $Role" -Level "INFO"
+        
+        # Method 1: Try Invoke-RestMethod with UseDefaultCredentials (HTTP Negotiate)
+        try {
+            Write-Log "Method 1: Using Invoke-RestMethod with UseDefaultCredentials..." -Level "INFO"
+            
+            $response = Invoke-RestMethod `
+                -Uri "$VaultUrl/v1/auth/gmsa/login" `
+                -Method Post `
+                -UseDefaultCredentials `
+                -UseBasicParsing `
+                -SkipCertificateCheck `
+                -ErrorAction Stop
+            
+            if ($response.auth -and $response.auth.client_token) {
+                Write-Log "SUCCESS: Vault authentication successful via HTTP Negotiate!" -Level "SUCCESS"
+                Write-Log "Client token: $($response.auth.client_token)" -Level "INFO"
+                Write-Log "Token TTL: $($response.auth.lease_duration) seconds" -Level "INFO"
+                return $response.auth.client_token
+            }
+        } catch {
+            Write-Log "Method 1 failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Method 2: Try WebRequest with UseDefaultCredentials
+        try {
+            Write-Log "Method 2: Using WebRequest with UseDefaultCredentials..." -Level "INFO"
+            
+            $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+            $request.Method = "POST"
+            $request.UseDefaultCredentials = $true
+            $request.PreAuthenticate = $true
+            $request.UserAgent = "Vault-gMSA-Client/4.1"
+            
+            $response = $request.GetResponse()
+            $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+            $responseBody = $reader.ReadToEnd()
+            $response.Close()
+            
+            $authResponse = $responseBody | ConvertFrom-Json
+            if ($authResponse.auth -and $authResponse.auth.client_token) {
+                Write-Log "SUCCESS: Vault authentication successful via WebRequest!" -Level "SUCCESS"
+                Write-Log "Client token: $($authResponse.auth.client_token)" -Level "INFO"
+                return $authResponse.auth.client_token
+            }
+        } catch {
+            Write-Log "Method 2 failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        # Method 3: Try with explicit role in body
+        try {
+            Write-Log "Method 3: Trying with role in request body..." -Level "INFO"
+            
+            $body = @{
+                role = $Role
+            } | ConvertTo-Json
+            
+            $response = Invoke-RestMethod `
+                -Uri "$VaultUrl/v1/auth/gmsa/login" `
+                -Method Post `
+                -Body $body `
+                -ContentType "application/json" `
+                -UseDefaultCredentials `
+                -UseBasicParsing `
+                -SkipCertificateCheck
+            
+            if ($response.auth -and $response.auth.client_token) {
+                Write-Log "SUCCESS: Vault authentication successful with role in body!" -Level "SUCCESS"
+                Write-Log "Client token: $($response.auth.client_token)" -Level "INFO"
+                return $response.auth.client_token
+            }
+        } catch {
+            Write-Log "Method 3 failed: $($_.Exception.Message)" -Level "WARNING"
+        }
+        
+        Write-Log "ERROR: All HTTP Negotiate methods failed" -Level "ERROR"
+        return $null
+        
+    } catch {
+        Write-Log "ERROR: HTTP Negotiate authentication failed: $($_.Exception.Message)" -Level "ERROR"
+        return $null
+    }
+}
+
 function Invoke-VaultAuthentication {
     param(
         [string]$VaultUrl,
@@ -1208,33 +1301,41 @@ function Start-VaultClientApplication {
         Write-Log "  Secret Paths: $($SecretPaths -join ', ')" -Level "INFO"
         Write-Log "  Config Directory: $ConfigOutputDir" -Level "INFO"
         
-        # Step 1: Get SPNEGO token
-        Write-Log "Step 1: Obtaining SPNEGO token..." -Level "INFO"
+        # Step 1: Authenticate to Vault using HTTP Negotiate (Primary Method)
+        Write-Log "Step 1: Authenticating to Vault using HTTP Negotiate protocol..." -Level "INFO"
+        $vaultToken = Invoke-VaultAuthenticationHTTPNegotiate -VaultUrl $VaultUrl -Role $VaultRole
+        
+        if (-not $vaultToken) {
+            Write-Log "HTTP Negotiate failed, trying fallback SPNEGO method..." -Level "WARNING"
+            
+            # Step 1b: Fallback to manual SPNEGO token generation
+            Write-Log "Step 1b: Obtaining SPNEGO token as fallback..." -Level "INFO"
         $spnegoToken = Get-SPNEGOToken -TargetSPN $SPN
         
         if (-not $spnegoToken) {
-            Write-Log "Failed to obtain authentication token" -Level "ERROR"
-            Write-Log "PRODUCTION TROUBLESHOOTING GUIDE:" -Level "ERROR"
-            Write-Log "1. Verify gMSA identity: $currentIdentity" -Level "ERROR"
-            Write-Log "2. Check Kerberos tickets: klist" -Level "ERROR"
-            Write-Log "3. Verify SPN: $SPN" -Level "ERROR"
-            Write-Log "4. Test Vault connectivity: Test-NetConnection vault.example.com -Port 8200" -Level "ERROR"
-            Write-Log "5. Check Vault server logs for authentication errors" -Level "ERROR"
-            Write-Log "6. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
+                Write-Log "Failed to obtain authentication token" -Level "ERROR"
+                Write-Log "PRODUCTION TROUBLESHOOTING GUIDE:" -Level "ERROR"
+                Write-Log "1. Verify gMSA identity: $currentIdentity" -Level "ERROR"
+                Write-Log "2. Check Kerberos tickets: klist" -Level "ERROR"
+                Write-Log "3. Verify SPN: $SPN" -Level "ERROR"
+                Write-Log "4. Test Vault connectivity: Test-NetConnection vault.example.com -Port 8200" -Level "ERROR"
+                Write-Log "5. Check Vault server logs for authentication errors" -Level "ERROR"
+                Write-Log "6. Ensure gMSA has 'Log on as a batch job' right" -Level "ERROR"
             return $false
         }
         
-        # Step 2: Authenticate to Vault
-        Write-Log "Step 2: Authenticating to Vault..." -Level "INFO"
+            # Step 1c: Authenticate to Vault with manual SPNEGO
+            Write-Log "Step 1c: Authenticating to Vault with manual SPNEGO..." -Level "INFO"
         $vaultToken = Invoke-VaultAuthentication -VaultUrl $VaultUrl -Role $VaultRole -SPNEGOToken $spnegoToken
+        }
         
         if (-not $vaultToken) {
             Write-Log "Failed to authenticate to Vault" -Level "ERROR"
             return $false
         }
         
-        # Step 3: Retrieve secrets
-        Write-Log "Step 3: Retrieving secrets..." -Level "INFO"
+        # Step 2: Retrieve secrets
+        Write-Log "Step 2: Retrieving secrets..." -Level "INFO"
         $secrets = Get-VaultSecrets -VaultUrl $VaultUrl -Token $vaultToken -SecretPaths $SecretPaths
         
         if ($secrets.Count -eq 0) {
@@ -1242,8 +1343,8 @@ function Start-VaultClientApplication {
             return $false
         }
         
-        # Step 4: Use secrets in application
-        Write-Log "Step 4: Processing secrets for application use..." -Level "INFO"
+        # Step 3: Use secrets in application
+        Write-Log "Step 3: Processing secrets for application use..." -Level "INFO"
         Use-SecretsInApplication -Secrets $secrets
         
         Write-Log "=== Vault Client Application Completed Successfully ===" -Level "INFO"
