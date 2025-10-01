@@ -53,7 +53,7 @@ Write-Host ""
 Write-Host "Step 2: All SPNs for gMSA Account:" -ForegroundColor Yellow
 try {
     $gmsaSpns = setspn -L $GMSAAccount 2>&1
-    Write-Host "SPNs registered to $GMSAAccount:" -ForegroundColor White
+    Write-Host "SPNs registered to ${GMSAAccount}:" -ForegroundColor White
     Write-Host $gmsaSpns -ForegroundColor Gray
     
     if ($gmsaSpns -match $SPN) {
