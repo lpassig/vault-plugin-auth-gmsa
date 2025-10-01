@@ -1,329 +1,377 @@
-# =============================================================================
-# Complete gMSA Setup with DSInternals Keytab Generation
-# =============================================================================
-# This script performs the complete gMSA authentication setup:
-# 1. Installs DSInternals module
-# 2. Extracts gMSA password from Active Directory
-# 3. Generates keytab with real password
-# 4. Configures Vault server
-# 5. Sets up Windows client with scheduled task
-# 6. Tests authentication
-# =============================================================================
+# Complete gMSA Setup Script
+# This script sets up gMSA authentication from start to finish
 
 param(
-    [string]$GMSAName = "vault-gmsa",
+    [string]$GMSAAccount = "LOCAL\vault-gmsa$",
     [string]$SPN = "HTTP/vault.local.lab",
-    [string]$Realm = "LOCAL.LAB",
+    [string]$DNSHostName = "vault.local.lab",
     [string]$VaultUrl = "https://vault.local.lab:8200",
-    [string]$VaultRole = "vault-gmsa-role",
-    [string]$VaultServer = "107.23.32.117",
-    [string]$VaultUser = "lennart",
-    [string]$TaskName = "VaultClientApp",
-    [switch]$SkipVaultUpdate,
-    [switch]$SkipClientSetup,
-    [switch]$TestOnly
+    [switch]$SkipChecks = $false
 )
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " Complete gMSA Setup with DSInternals" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "COMPLETE GMSA SETUP" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# =============================================================================
-# Step 1: Install DSInternals Module
-# =============================================================================
+# Check if running as Administrator
+$currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object System.Security.Principal.WindowsPrincipal($currentUser)
+$isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 
-Write-Host "[Step 1/6] Installing DSInternals module..." -ForegroundColor Yellow
+if (-not $isAdmin) {
+    Write-Host "ERROR: This script must be run as Administrator" -ForegroundColor Red
+    Write-Host "Right-click PowerShell and select 'Run as Administrator'" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "SUCCESS: Running as Administrator" -ForegroundColor Green
 Write-Host ""
 
-if (-not (Get-Module -ListAvailable -Name DSInternals)) {
-    Write-Host "  DSInternals not found, installing..." -ForegroundColor Cyan
+Write-Host "Configuration:" -ForegroundColor Yellow
+Write-Host "  gMSA Account: $GMSAAccount" -ForegroundColor White
+Write-Host "  SPN: $SPN" -ForegroundColor White
+Write-Host "  DNS Host Name: $DNSHostName" -ForegroundColor White
+Write-Host "  Vault URL: $VaultUrl" -ForegroundColor White
+Write-Host ""
+
+# Function to create gMSA account
+function New-GMSAAccount {
+    Write-Host "Step 1: Creating gMSA account..." -ForegroundColor Yellow
+    Write-Host "--------------------------------" -ForegroundColor Yellow
     
     try {
-        Install-Module -Name DSInternals -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
-        Write-Host "  ✓ DSInternals installed successfully" -ForegroundColor Green
+        $gmsa = Get-ADServiceAccount -Identity $GMSAAccount -ErrorAction SilentlyContinue
+        
+        if ($gmsa) {
+            Write-Host "✓ gMSA account already exists" -ForegroundColor Green
+            Write-Host "  Name: $($gmsa.Name)" -ForegroundColor Gray
+            return $true
+        } else {
+            Write-Host "Creating gMSA account..." -ForegroundColor Cyan
+            
+            New-ADServiceAccount -Name "vault-gmsa" -DNSHostName $DNSHostName -ErrorAction Stop
+            
+            Write-Host "✓ gMSA account created successfully" -ForegroundColor Green
+            return $true
+        }
     } catch {
-        Write-Host "  ✗ Failed to install DSInternals: $_" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Manual installation:" -ForegroundColor Yellow
-        Write-Host "  Install-Module -Name DSInternals -Scope CurrentUser" -ForegroundColor White
-        exit 1
-    }
-} else {
-    Write-Host "  ✓ DSInternals already installed" -ForegroundColor Green
-}
-
-Import-Module DSInternals -ErrorAction Stop
-Write-Host "  ✓ DSInternals module loaded" -ForegroundColor Green
-Write-Host ""
-
-# =============================================================================
-# Step 2: Extract gMSA Password from Active Directory
-# =============================================================================
-
-Write-Host "[Step 2/6] Extracting gMSA password from Active Directory..." -ForegroundColor Yellow
-Write-Host ""
-
-try {
-    # Get the gMSA object with managed password attribute
-    $gmsaAccount = Get-ADServiceAccount -Identity $GMSAName -Properties 'msDS-ManagedPassword' -ErrorAction Stop
-    
-    if (-not $gmsaAccount.'msDS-ManagedPassword') {
-        Write-Host "  ✗ No managed password found for $GMSAName" -ForegroundColor Red
-        Write-Host "  This computer may not have permission to retrieve the password" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "Verify:" -ForegroundColor Yellow
-        Write-Host "  Test-ADServiceAccount -Identity $GMSAName" -ForegroundColor White
-        exit 1
-    }
-    
-    Write-Host "  ✓ Retrieved gMSA object from AD" -ForegroundColor Green
-    
-    # Decode the password blob
-    $passwordBlob = $gmsaAccount.'msDS-ManagedPassword'
-    $managedPassword = ConvertFrom-ADManagedPasswordBlob $passwordBlob
-    
-    Write-Host "  ✓ Decoded managed password blob" -ForegroundColor Green
-    
-    # Get the current password
-    $currentPassword = $managedPassword.SecureCurrentPassword
-    
-    # Convert SecureString to plain text (needed for ktpass)
-    $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($currentPassword)
-    $plainPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
-    
-    Write-Host "  ✓ Extracted current password (length: $($plainPassword.Length) chars)" -ForegroundColor Green
-    Write-Host ""
-    
-} catch {
-    Write-Host "  ✗ Failed to extract gMSA password: $_" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Common issues:" -ForegroundColor Yellow
-    Write-Host "  1. Computer not in PrincipalsAllowedToRetrieveManagedPassword" -ForegroundColor White
-    Write-Host "  2. gMSA not installed: Install-ADServiceAccount -Identity $GMSAName" -ForegroundColor White
-    Write-Host "  3. Insufficient permissions" -ForegroundColor White
-    exit 1
-}
-
-# =============================================================================
-# Step 3: Generate Keytab using ktpass
-# =============================================================================
-
-Write-Host "[Step 3/6] Generating keytab using ktpass..." -ForegroundColor Yellow
-Write-Host ""
-
-$keytabFile = "vault-gmsa-generated.keytab"
-
-try {
-    # Build ktpass command
-    $ktpassArgs = @(
-        "-princ", "$SPN@$Realm",
-        "-mapuser", "$Realm\$GMSAName$",
-        "-crypto", "AES256-SHA1",
-        "-ptype", "KRB5_NT_PRINCIPAL",
-        "-pass", $plainPassword,
-        "-out", $keytabFile
-    )
-    
-    Write-Host "  Running ktpass..." -ForegroundColor Cyan
-    
-    # Run ktpass
-    $ktpassProcess = Start-Process -FilePath "ktpass" -ArgumentList $ktpassArgs -NoNewWindow -Wait -PassThru
-    
-    if ($ktpassProcess.ExitCode -eq 0 -and (Test-Path $keytabFile)) {
-        $keytabSize = (Get-Item $keytabFile).Length
-        Write-Host "  ✓ Keytab generated successfully" -ForegroundColor Green
-        Write-Host "  ✓ File: $keytabFile ($keytabSize bytes)" -ForegroundColor Green
-    } else {
-        Write-Host "  ✗ ktpass failed (exit code: $($ktpassProcess.ExitCode))" -ForegroundColor Red
-        exit 1
-    }
-    
-} catch {
-    Write-Host "  ✗ Failed to generate keytab: $_" -ForegroundColor Red
-    exit 1
-} finally {
-    # Clear password from memory
-    if ($plainPassword) {
-        $plainPassword = $null
-        [System.GC]::Collect()
+        Write-Host "❌ Error creating gMSA account: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Make sure you have Domain Admin privileges" -ForegroundColor Yellow
+        return $false
     }
 }
 
-Write-Host ""
-
-# =============================================================================
-# Step 4: Convert to Base64
-# =============================================================================
-
-Write-Host "[Step 4/6] Converting keytab to base64..." -ForegroundColor Yellow
-Write-Host ""
-
-try {
-    $keytabBytes = [System.IO.File]::ReadAllBytes($keytabFile)
-    $keytabB64 = [System.Convert]::ToBase64String($keytabBytes)
-    
-    $outputB64File = "$keytabFile.b64"
-    $keytabB64 | Out-File -FilePath $outputB64File -Encoding ASCII -NoNewline
-    
-    Write-Host "  ✓ Base64 keytab saved: $outputB64File" -ForegroundColor Green
-    Write-Host "  ✓ Base64 length: $($keytabB64.Length) characters" -ForegroundColor Green
+# Function to register SPN
+function Register-SPN {
     Write-Host ""
-    
-} catch {
-    Write-Host "  ✗ Failed to convert keytab: $_" -ForegroundColor Red
-    exit 1
-}
-
-# =============================================================================
-# Step 5: Update Vault Server Configuration
-# =============================================================================
-
-if (-not $SkipVaultUpdate) {
-    Write-Host "[Step 5/6] Updating Vault server configuration..." -ForegroundColor Yellow
-    Write-Host ""
+    Write-Host "Step 2: Registering SPN..." -ForegroundColor Yellow
+    Write-Host "-------------------------" -ForegroundColor Yellow
     
     try {
-        $sshCommand = "VAULT_SKIP_VERIFY=1 vault write auth/gmsa/config keytab='$keytabB64' spn='$SPN' realm='$Realm'"
+        # Check current SPN registration
+        $spnResult = setspn -Q $SPN 2>&1
         
-        Write-Host "  Connecting to $VaultServer..." -ForegroundColor Cyan
+        if ($spnResult -match $GMSAAccount) {
+            Write-Host "✓ SPN is already registered to gMSA account" -ForegroundColor Green
+            return $true
+        } elseif ($spnResult -match "No such SPN found") {
+            Write-Host "SPN not found, registering..." -ForegroundColor Cyan
+            
+            $result = setspn -A $SPN $GMSAAccount 2>&1
+            
+            if ($result -match "successfully" -or $result -match "registered") {
+                Write-Host "✓ SPN registered successfully" -ForegroundColor Green
+                return $true
+            } else {
+                Write-Host "❌ SPN registration failed: $result" -ForegroundColor Red
+                return $false
+            }
+        } else {
+            Write-Host "⚠ SPN is registered to a different account" -ForegroundColor Yellow
+            Write-Host "Current registration: $spnResult" -ForegroundColor Gray
+            
+            # Ask if user wants to force transfer
+            $transfer = Read-Host "Do you want to transfer SPN to gMSA account? (y/n)"
+            
+            if ($transfer -eq "y" -or $transfer -eq "Y") {
+                Write-Host "Transferring SPN..." -ForegroundColor Cyan
+                
+                # Remove from current account
+                setspn -D $SPN 2>&1 | Out-Null
+                
+                # Add to gMSA account
+                $result = setspn -A $SPN $GMSAAccount 2>&1
+                
+                if ($result -match "successfully" -or $result -match "registered") {
+                    Write-Host "✓ SPN transferred successfully" -ForegroundColor Green
+                    return $true
+                } else {
+                    Write-Host "❌ SPN transfer failed: $result" -ForegroundColor Red
+                    return $false
+                }
+            } else {
+                Write-Host "⚠ SPN transfer skipped" -ForegroundColor Yellow
+                return $false
+            }
+        }
+    } catch {
+        Write-Host "❌ Error registering SPN: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Function to install gMSA on client
+function Install-GMSAOnClient {
+    Write-Host ""
+    Write-Host "Step 3: Installing gMSA on client..." -ForegroundColor Yellow
+    Write-Host "-------------------------------------" -ForegroundColor Yellow
+    
+    try {
+        $installed = Test-ADServiceAccount -Identity $GMSAAccount -ErrorAction SilentlyContinue
         
-        $result = ssh "$VaultUser@$VaultServer" $sshCommand 2>&1
+        if ($installed) {
+            Write-Host "✓ gMSA is already installed on this machine" -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "Installing gMSA on this machine..." -ForegroundColor Cyan
+            
+            Install-ADServiceAccount -Identity $GMSAAccount -ErrorAction Stop
+            
+            Write-Host "✓ gMSA installed successfully" -ForegroundColor Green
+            return $true
+        }
+    } catch {
+        Write-Host "❌ Error installing gMSA: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Make sure the machine is domain-joined and you have permissions" -ForegroundColor Yellow
+        return $false
+    }
+}
+
+# Function to get Kerberos tickets
+function Get-KerberosTickets {
+    Write-Host ""
+    Write-Host "Step 4: Getting Kerberos tickets..." -ForegroundColor Yellow
+    Write-Host "-----------------------------------" -ForegroundColor Yellow
+    
+    try {
+        Write-Host "Requesting Kerberos tickets..." -ForegroundColor Cyan
+        
+        $result = kinit -k $GMSAAccount 2>&1
         
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "  ✓ Vault keytab updated successfully" -ForegroundColor Green
-            Write-Host ""
-            Write-Host "Vault configuration:" -ForegroundColor Cyan
-            Write-Host $result -ForegroundColor White
-        } else {
-            Write-Host "  ✗ Failed to update Vault (exit code: $LASTEXITCODE)" -ForegroundColor Red
-            Write-Host "  Output: $result" -ForegroundColor Yellow
-            Write-Host ""
-            Write-Host "Manual update command:" -ForegroundColor Yellow
-            Write-Host "  ssh $VaultUser@$VaultServer" -ForegroundColor Cyan
-            Write-Host "  $sshCommand" -ForegroundColor Cyan
-        }
-        
-    } catch {
-        Write-Host "  ✗ Failed to update Vault: $_" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Manual update command:" -ForegroundColor Yellow
-        Write-Host "  ssh $VaultUser@$VaultServer" -ForegroundColor Cyan
-        Write-Host "  VAULT_SKIP_VERIFY=1 vault write auth/gmsa/config keytab='<base64-content>'" -ForegroundColor Cyan
-    }
-    
-    Write-Host ""
-} else {
-    Write-Host "[Step 5/6] Skipping Vault update (use -SkipVaultUpdate=`$false to enable)" -ForegroundColor Yellow
-    Write-Host ""
-}
-
-# =============================================================================
-# Step 6: Setup Windows Client with Scheduled Task
-# =============================================================================
-
-if (-not $SkipClientSetup) {
-    Write-Host "[Step 6/6] Setting up Windows client..." -ForegroundColor Yellow
-    Write-Host ""
-    
-    if (Test-Path ".\setup-vault-client.ps1") {
-        Write-Host "  Running setup-vault-client.ps1..." -ForegroundColor Cyan
-        
-        try {
-            & ".\setup-vault-client.ps1" -VaultUrl $VaultUrl -VaultRole $VaultRole -TaskName $TaskName
+            Write-Host "✓ Kerberos tickets obtained successfully" -ForegroundColor Green
             
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  ✓ Client setup completed successfully" -ForegroundColor Green
-            } else {
-                Write-Host "  ✗ Client setup failed (exit code: $LASTEXITCODE)" -ForegroundColor Red
-            }
-        } catch {
-            Write-Host "  ✗ Client setup failed: $_" -ForegroundColor Red
+            # Show tickets
+            $tickets = klist 2>&1
+            Write-Host "Current tickets:" -ForegroundColor Gray
+            Write-Host $tickets -ForegroundColor Gray
+            
+            return $true
+        } else {
+            Write-Host "❌ Failed to get Kerberos tickets: $result" -ForegroundColor Red
+            return $false
         }
-    } else {
-        Write-Host "  ✗ setup-vault-client.ps1 not found" -ForegroundColor Red
-        Write-Host "  Run manually: .\\setup-vault-client.ps1 -VaultUrl `"$VaultUrl`" -VaultRole `"$VaultRole`"" -ForegroundColor Yellow
+    } catch {
+        Write-Host "❌ Error getting Kerberos tickets: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
     }
-    
-    Write-Host ""
-} else {
-    Write-Host "[Step 6/6] Skipping client setup (use -SkipClientSetup=`$false to enable)" -ForegroundColor Yellow
-    Write-Host ""
 }
 
-# =============================================================================
-# Test Authentication (if requested)
-# =============================================================================
+# Function to create scheduled task
+function New-ScheduledTask {
+    Write-Host ""
+    Write-Host "Step 5: Creating scheduled task..." -ForegroundColor Yellow
+    Write-Host "-----------------------------------" -ForegroundColor Yellow
+    
+    try {
+        # Create directories
+        $scriptDir = "C:\vault-client"
+        $logDir = "$scriptDir\logs"
+        
+        if (-not (Test-Path $scriptDir)) {
+            New-Item -ItemType Directory -Path $scriptDir -Force | Out-Null
+            Write-Host "✓ Created directory: $scriptDir" -ForegroundColor Green
+        }
+        
+        if (-not (Test-Path $logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+            Write-Host "✓ Created directory: $logDir" -ForegroundColor Green
+        }
+        
+        # Create the gMSA client script
+        $scriptPath = "$scriptDir\vault-gmsa-client.ps1"
+        
+        $scriptContent = @'
+# Vault gMSA Client for Scheduled Task
+param([string]$VaultUrl = "https://vault.local.lab:8200")
 
-if ($TestOnly) {
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host " Testing Authentication" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "[$timestamp] [$Level] $Message"
+    Write-Host $logMessage
+    $logFile = "C:\vault-client\logs\vault-gmsa-$(Get-Date -Format 'yyyy-MM-dd').log"
+    Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
+}
+
+Write-Log "Starting Vault gMSA authentication..." "INFO"
+Write-Log "Current user: $(whoami)" "INFO"
+
+# Bypass SSL for testing
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+
+try {
+    Write-Log "Authenticating with Vault..." "INFO"
+    
+    $response = Invoke-RestMethod -Uri "$VaultUrl/v1/auth/kerberos/login" -Method Post -UseDefaultCredentials -UseBasicParsing -ErrorAction Stop
+    
+    if ($response.auth -and $response.auth.client_token) {
+        Write-Log "SUCCESS: Authentication successful!" "SUCCESS"
+        Write-Log "Token: $($response.auth.client_token)" "INFO"
+        
+        # Test token
+        $headers = @{"X-Vault-Token" = $response.auth.client_token}
+        $testResponse = Invoke-RestMethod -Uri "$VaultUrl/v1/sys/health" -Headers $headers -UseBasicParsing
+        Write-Log "SUCCESS: Token validation successful!" "SUCCESS"
+        exit 0
+    } else {
+        Write-Log "ERROR: No token received" "ERROR"
+        exit 1
+    }
+} catch {
+    Write-Log "ERROR: Authentication failed: $($_.Exception.Message)" "ERROR"
+    exit 1
+}
+'@
+
+        Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
+        Write-Host "✓ Created gMSA client script: $scriptPath" -ForegroundColor Green
+        
+        # Create scheduled task
+        $taskName = "Vault-gMSA-Authentication"
+        
+        # Remove existing task
+        $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if ($existingTask) {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+            Write-Host "✓ Removed existing task" -ForegroundColor Green
+        }
+        
+        # Create new task
+        $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 365)
+        $principal = New-ScheduledTaskPrincipal -UserId $GMSAAccount -LogonType Password -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "Vault gMSA Authentication"
+        
+        Write-Host "✓ Created scheduled task: $taskName" -ForegroundColor Green
+        Write-Host "✓ Task runs under: $GMSAAccount" -ForegroundColor Green
+        Write-Host "✓ Task runs every 5 minutes" -ForegroundColor Green
+        
+        return $true
+    } catch {
+        Write-Host "❌ Error creating scheduled task: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Function to test the setup
+function Test-Setup {
+    Write-Host ""
+    Write-Host "Step 6: Testing the setup..." -ForegroundColor Yellow
+    Write-Host "-----------------------------" -ForegroundColor Yellow
+    
+    try {
+        $taskName = "Vault-gMSA-Authentication"
+        
+        Write-Host "Starting scheduled task manually..." -ForegroundColor Cyan
+        Start-ScheduledTask -TaskName $taskName
+        
+        Write-Host "Waiting for execution..." -ForegroundColor Cyan
+        Start-Sleep -Seconds 10
+        
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+        Write-Host "Execution result: $($taskInfo.LastTaskResult)" -ForegroundColor Gray
+        
+        if ($taskInfo.LastTaskResult -eq 0) {
+            Write-Host "✓ Test execution successful!" -ForegroundColor Green
+            
+            # Show recent logs
+            $logDir = "C:\vault-client\logs"
+            if (Test-Path $logDir) {
+                $logFiles = Get-ChildItem -Path $logDir -Filter "vault-gmsa-*.log" -ErrorAction SilentlyContinue
+                if ($logFiles) {
+                    $latestLog = $logFiles | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                    Write-Host ""
+                    Write-Host "Recent log entries:" -ForegroundColor Cyan
+                    $lastLines = Get-Content -Path $latestLog.FullName -Tail 5
+                    foreach ($line in $lastLines) {
+                        Write-Host "  $line" -ForegroundColor Gray
+                    }
+                }
+            }
+            
+            return $true
+        } else {
+            Write-Host "❌ Test execution failed (Result: $($taskInfo.LastTaskResult))" -ForegroundColor Red
+            return $false
+        }
+    } catch {
+        Write-Host "❌ Error testing setup: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# Main execution
+function Main {
+    Write-Host "Starting complete gMSA setup..." -ForegroundColor Green
     Write-Host ""
     
-    Write-Host "Starting scheduled task: $TaskName" -ForegroundColor Cyan
-    Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    # Run all setup steps
+    $step1 = New-GMSAAccount
+    $step2 = Register-SPN
+    $step3 = Install-GMSAOnClient
+    $step4 = Get-KerberosTickets
+    $step5 = New-ScheduledTask
+    $step6 = Test-Setup
     
-    Write-Host "Waiting for task to complete (5 seconds)..." -ForegroundColor Cyan
-    Start-Sleep -Seconds 5
+    # Summary
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "SETUP SUMMARY" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host ""
     
-    $logFile = "C:\vault-client\config\vault-client.log"
-    if (Test-Path $logFile) {
+    Write-Host "Results:" -ForegroundColor Yellow
+    Write-Host "  gMSA Account: $(if ($step1) { '✓ SUCCESS' } else { '❌ FAILED' })" -ForegroundColor $(if ($step1) { 'Green' } else { 'Red' })
+    Write-Host "  SPN Registration: $(if ($step2) { '✓ SUCCESS' } else { '❌ FAILED' })" -ForegroundColor $(if ($step2) { 'Green' } else { 'Red' })
+    Write-Host "  gMSA Installation: $(if ($step3) { '✓ SUCCESS' } else { '❌ FAILED' })" -ForegroundColor $(if ($step3) { 'Green' } else { 'Red' })
+    Write-Host "  Kerberos Tickets: $(if ($step4) { '✓ SUCCESS' } else { '❌ FAILED' })" -ForegroundColor $(if ($step4) { 'Green' } else { 'Red' })
+    Write-Host "  Scheduled Task: $(if ($step5) { '✓ SUCCESS' } else { '❌ FAILED' })" -ForegroundColor $(if ($step5) { 'Green' } else { 'Red' })
+    Write-Host "  Test Execution: $(if ($step6) { '✓ SUCCESS' } else { '❌ FAILED' })" -ForegroundColor $(if ($step6) { 'Green' } else { 'Red' })
+    
+    Write-Host ""
+    
+    if ($step1 -and $step2 -and $step3 -and $step4 -and $step5 -and $step6) {
+        Write-Host "🎉 SUCCESS: Complete gMSA setup is working!" -ForegroundColor Green
+        Write-Host "Your gMSA authentication with Vault is now fully configured." -ForegroundColor Green
         Write-Host ""
-        Write-Host "Last 30 lines of log:" -ForegroundColor Cyan
-        Get-Content $logFile -Tail 30 | ForEach-Object { Write-Host $_ }
+        Write-Host "Manual commands:" -ForegroundColor Yellow
+        Write-Host "  Start task: Start-ScheduledTask -TaskName 'Vault-gMSA-Authentication'" -ForegroundColor White
+        Write-Host "  View logs: Get-Content 'C:\vault-client\logs\vault-gmsa-*.log' -Tail 20" -ForegroundColor White
+        Write-Host "  Check status: .\check-gmsa-status.ps1" -ForegroundColor White
     } else {
-        Write-Host "  ✗ Log file not found: $logFile" -ForegroundColor Red
+        Write-Host "⚠ SETUP INCOMPLETE: Some steps failed" -ForegroundColor Yellow
+        Write-Host "Please review the errors above and retry the failed steps." -ForegroundColor Yellow
     }
+    
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "SETUP COMPLETE" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
 }
 
-# =============================================================================
-# Summary
-# =============================================================================
-
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " Setup Complete!" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-Write-Host "✓ DSInternals Module: Installed" -ForegroundColor Green
-Write-Host "✓ gMSA Password: Extracted from AD" -ForegroundColor Green
-Write-Host "✓ Keytab File: $keytabFile" -ForegroundColor Green
-Write-Host "✓ Base64 File: $outputB64File" -ForegroundColor Green
-
-if (-not $SkipVaultUpdate) {
-    Write-Host "✓ Vault Server: Updated" -ForegroundColor Green
-} else {
-    Write-Host "⚠ Vault Server: Not updated (run with -SkipVaultUpdate=`$false)" -ForegroundColor Yellow
-}
-
-if (-not $SkipClientSetup) {
-    Write-Host "✓ Windows Client: Configured" -ForegroundColor Green
-} else {
-    Write-Host "⚠ Windows Client: Not configured (run with -SkipClientSetup=`$false)" -ForegroundColor Yellow
-}
-
-Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host ""
-
-Write-Host "1. Test authentication:" -ForegroundColor White
-Write-Host "   Start-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Cyan
-Write-Host "   Get-Content 'C:\vault-client\config\vault-client.log' -Tail 30" -ForegroundColor Cyan
-Write-Host ""
-
-Write-Host "2. Expected result:" -ForegroundColor White
-Write-Host "   [SUCCESS] Real SPNEGO token generated!" -ForegroundColor Green
-Write-Host "   [SUCCESS] Vault authentication successful!" -ForegroundColor Green
-Write-Host ""
-
-Write-Host "3. Monthly keytab rotation:" -ForegroundColor White
-Write-Host "   Schedule this script to run monthly (before gMSA password rotation)" -ForegroundColor Cyan
-Write-Host "   OR" -ForegroundColor White
-Write-Host "   Enable Vault auto-rotation (see SOLUTION-COMPARISON.md)" -ForegroundColor Cyan
-Write-Host ""
-
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " 🎉 All Done!" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
+# Run main function
+Main
