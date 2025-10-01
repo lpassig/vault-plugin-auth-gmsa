@@ -13,7 +13,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "ISSUE:" -ForegroundColor Red
-Write-Host "SPN $SPN is stuck on $ComputerAccount and needs to be transferred to $GMSAAccount" -ForegroundColor Red
+Write-Host "SPN $SPN is stuck on $ComputerAccount and needs to be transferred to ${GMSAAccount}" -ForegroundColor Red
 Write-Host "Vault server expects SPN to be owned by gMSA for valid SPNEGO tokens" -ForegroundColor Red
 Write-Host ""
 
@@ -83,7 +83,7 @@ Write-Host ""
 # Step 3: Register SPN to gMSA account
 Write-Host "Step 3: Registering SPN to gMSA account..." -ForegroundColor Yellow
 try {
-    Write-Host "Registering $SPN to $GMSAAccount..." -ForegroundColor Cyan
+    Write-Host "Registering $SPN to ${GMSAAccount}..." -ForegroundColor Cyan
     
     # Try different approaches to register the SPN
     $addCommands = @(
@@ -117,9 +117,9 @@ try {
     Write-Host "Final verification result:" -ForegroundColor White
     Write-Host $finalResult -ForegroundColor Gray
     
-    if ($finalResult -match $GMSAAccount) {
+    if ($finalResult -match ${GMSAAccount}) {
         Write-Host "SUCCESS: SPN registration verified!" -ForegroundColor Green
-        Write-Host "SPN $SPN is now registered to $GMSAAccount" -ForegroundColor Green
+        Write-Host "SPN $SPN is now registered to ${GMSAAccount}" -ForegroundColor Green
     } elseif ($finalResult -match $ComputerAccount) {
         Write-Host "ERROR: SPN still registered to computer account" -ForegroundColor Red
         Write-Host "Manual intervention may be required" -ForegroundColor Red
@@ -135,7 +135,7 @@ Write-Host ""
 Write-Host "Step 5: Listing all SPNs for gMSA account..." -ForegroundColor Yellow
 try {
     $gmsaSpns = setspn -L $GMSAAccount 2>&1
-    Write-Host "SPNs registered to $GMSAAccount:" -ForegroundColor White
+    Write-Host "SPNs registered to ${GMSAAccount}:" -ForegroundColor White
     Write-Host $gmsaSpns -ForegroundColor Gray
     
     if ($gmsaSpns -match $SPN) {
