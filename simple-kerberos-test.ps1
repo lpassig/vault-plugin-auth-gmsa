@@ -1,81 +1,145 @@
-Write-Host "Testing REAL Kerberos authentication..." -ForegroundColor Yellow
+# Simple Kerberos Authentication Test
+# This script tests gMSA authentication after SPN fix
 
-# Method 1: Use curl with --negotiate (most reliable)
+param(
+    [string]$VaultUrl = "http://10.0.101.8:8200"
+)
+
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "Simple Kerberos Authentication Test" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Method 1: Using curl with --negotiate..." -ForegroundColor Cyan
 
-$curlPath = "C:\Windows\System32\curl.exe"
-if (Test-Path $curlPath) {
-    # Create temp file in current directory instead
-    $tempJsonFile = "kerberos-test.json"
-    '{"role":"computer-accounts"}' | Out-File -FilePath $tempJsonFile -Encoding ASCII -NoNewline
-    
-    $curlArgs = @(
-        "--negotiate",
-        "--user", ":",
-        "-X", "POST",
-        "-H", "Content-Type: application/json",
-        "--data-binary", "@$tempJsonFile",
-        "-k",
-        "-s",
-        "http://vault.local.lab:8200/v1/auth/kerberos/login"
-    )
-    
-    Write-Host "Running curl with Kerberos authentication..." -ForegroundColor Gray
-    $curlResult = & $curlPath $curlArgs 2>&1 | Out-String
-    
-    # Clean up temp file
-    Remove-Item -Path $tempJsonFile -Force -ErrorAction SilentlyContinue
-    
-    Write-Host "curl output:" -ForegroundColor White
-    Write-Host $curlResult -ForegroundColor Gray
-    
-    if ($curlResult -match '"client_token"') {
-        Write-Host "✓ curl Kerberos authentication successful!" -ForegroundColor Green
-    } else {
-        Write-Host "❌ curl Kerberos authentication failed" -ForegroundColor Red
-    }
+# SSL Certificate bypass
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+
+Write-Host "Vault Server: $VaultUrl" -ForegroundColor Yellow
+Write-Host ""
+
+# Test 1: Check current identity
+Write-Host "1. Current Identity:" -ForegroundColor Yellow
+$currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+Write-Host "Current user: $currentIdentity" -ForegroundColor White
+
+if ($currentIdentity.EndsWith("$")) {
+    Write-Host "SUCCESS: Running under gMSA identity!" -ForegroundColor Green
 } else {
-    Write-Host "❌ curl.exe not found" -ForegroundColor Red
+    Write-Host "WARNING: Not running under gMSA identity" -ForegroundColor Yellow
+    Write-Host "This test will likely fail - run as scheduled task under gMSA" -ForegroundColor Yellow
 }
-
-# Method 2: Use WebRequest with UseDefaultCredentials
 Write-Host ""
-Write-Host "Method 2: Using WebRequest with UseDefaultCredentials..." -ForegroundColor Cyan
 
+# Test 2: Check Kerberos tickets
+Write-Host "2. Kerberos Tickets:" -ForegroundColor Yellow
 try {
-    $request = [System.Net.WebRequest]::Create("http://vault.local.lab:8200/v1/auth/kerberos/login")
-    $request.Method = "POST"
-    $request.UseDefaultCredentials = $true
-    $request.ContentType = "application/json"
+    $klistOutput = klist 2>&1
+    Write-Host "Kerberos tickets:" -ForegroundColor White
+    Write-Host $klistOutput -ForegroundColor Gray
     
-    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes('{"role":"computer-accounts"}')
-    $request.ContentLength = $bodyBytes.Length
-    
-    $requestStream = $request.GetRequestStream()
-    $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
-    $requestStream.Close()
-    
-    $response = $request.GetResponse()
-    $responseStream = $response.GetResponseStream()
-    $reader = New-Object System.IO.StreamReader($responseStream)
-    $responseContent = $reader.ReadToEnd()
-    
-    Write-Host "WebRequest response:" -ForegroundColor White
-    Write-Host $responseContent -ForegroundColor Gray
-    
-    if ($responseContent -match '"client_token"') {
-        Write-Host "✓ WebRequest Kerberos authentication successful!" -ForegroundColor Green
+    if ($klistOutput -match "HTTP/vault.local.lab") {
+        Write-Host "SUCCESS: Kerberos ticket found for HTTP/vault.local.lab" -ForegroundColor Green
     } else {
-        Write-Host "❌ WebRequest Kerberos authentication failed" -ForegroundColor Red
+        Write-Host "WARNING: No Kerberos ticket found for HTTP/vault.local.lab" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "ERROR: Cannot check Kerberos tickets" -ForegroundColor Red
+}
+Write-Host ""
+
+# Test 3: Test Vault connectivity
+Write-Host "3. Vault Server Connectivity:" -ForegroundColor Yellow
+try {
+    $health = Invoke-RestMethod -Uri "$VaultUrl/v1/sys/health" -Method Get
+    Write-Host "SUCCESS: Vault server is reachable" -ForegroundColor Green
+    Write-Host "  Initialized: $($health.initialized)" -ForegroundColor Gray
+    Write-Host "  Sealed: $($health.sealed)" -ForegroundColor Gray
+    Write-Host "  Version: $($health.version)" -ForegroundColor Gray
+} catch {
+    Write-Host "ERROR: Cannot reach Vault server" -ForegroundColor Red
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host ""
+
+# Test 4: Test Kerberos authentication
+Write-Host "4. Kerberos Authentication Test:" -ForegroundColor Yellow
+try {
+    Write-Host "Attempting Kerberos authentication..." -ForegroundColor Cyan
+    
+    $response = Invoke-RestMethod `
+        -Uri "$VaultUrl/v1/auth/kerberos/login" `
+        -Method Post `
+        -UseDefaultCredentials `
+        -UseBasicParsing
+    
+    if ($response.auth -and $response.auth.client_token) {
+        Write-Host "SUCCESS: Kerberos authentication successful!" -ForegroundColor Green
+        Write-Host "Client token: $($response.auth.client_token)" -ForegroundColor Green
+        Write-Host "Token TTL: $($response.auth.lease_duration) seconds" -ForegroundColor Green
+        Write-Host "Policies: $($response.auth.policies -join ', ')" -ForegroundColor Green
+        
+        # Test secret retrieval
+        Write-Host ""
+        Write-Host "5. Secret Retrieval Test:" -ForegroundColor Yellow
+        try {
+            $headers = @{
+                "X-Vault-Token" = $response.auth.client_token
+            }
+            
+            $secrets = Invoke-RestMethod `
+                -Uri "$VaultUrl/v1/secret/my-app/database" `
+                -Method Get `
+                -Headers $headers
+            
+            Write-Host "SUCCESS: Secrets retrieved!" -ForegroundColor Green
+            Write-Host "Database secrets:" -ForegroundColor White
+            Write-Host "  Username: $($secrets.data.data.username)" -ForegroundColor Gray
+            Write-Host "  Password: $($secrets.data.data.password)" -ForegroundColor Gray
+            Write-Host "  Host: $($secrets.data.data.host)" -ForegroundColor Gray
+            Write-Host "  Port: $($secrets.data.data.port)" -ForegroundColor Gray
+            
+            Write-Host ""
+            Write-Host "🎉 COMPLETE SUCCESS: gMSA authentication is working!" -ForegroundColor Green
+            Write-Host "The SPN registration fix was successful!" -ForegroundColor Green
+            
+        } catch {
+            Write-Host "ERROR: Failed to retrieve secrets" -ForegroundColor Red
+            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+        }
+        
+    } else {
+        Write-Host "ERROR: Authentication failed - no token received" -ForegroundColor Red
     }
     
-    $response.Close()
 } catch {
-    Write-Host "❌ WebRequest error: $_" -ForegroundColor Red
+    $statusCode = $_.Exception.Response.StatusCode
+    Write-Host "Authentication failed with status: $statusCode" -ForegroundColor Red
+    
+    if ($_.Exception.Response) {
+        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+        $errorBody = $reader.ReadToEnd()
+        Write-Host "Error details: $errorBody" -ForegroundColor Red
+    }
 }
-
 Write-Host ""
-Write-Host "Kerberos authentication test complete!" -ForegroundColor Cyan
 
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "Test Complete" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host ""
 
+Write-Host "INTERPRETATION:" -ForegroundColor Yellow
+if ($currentIdentity.EndsWith("$")) {
+    Write-Host "If authentication succeeded: SPN fix worked!" -ForegroundColor Green
+    Write-Host "If authentication failed: Check Vault server logs for details" -ForegroundColor Yellow
+} else {
+    Write-Host "Authentication will likely fail when running as Administrator" -ForegroundColor Yellow
+    Write-Host "Run as scheduled task under gMSA identity for real test" -ForegroundColor Yellow
+}
+Write-Host ""
+
+Write-Host "NEXT STEPS:" -ForegroundColor Yellow
+Write-Host "1. If test failed, run: .\force-spn-transfer.ps1" -ForegroundColor White
+Write-Host "2. Test scheduled task: Start-ScheduledTask -TaskName 'Vault-gMSA-Authentication'" -ForegroundColor White
+Write-Host "3. Check task results: .\check-gmsa-task-status.ps1" -ForegroundColor White
+Write-Host ""
