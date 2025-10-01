@@ -9,7 +9,7 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://vault.example.com:8200",
+    [string]$VaultUrl = "http://10.0.101.8:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$SPN = "HTTP/vault.local.lab",
     [string[]]$SecretPaths = @("kv/data/my-app/database", "kv/data/my-app/api"),
@@ -31,7 +31,7 @@ try {
     Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
     
     # Map vault.local.lab to the correct IP for Kerberos
-    $vaultIP = "10.0.101.8"  # Correct IP from DNS resolution
+    $vaultIP = "10.0.101.8"  # Internal Vault server IP
     Write-Host "Mapping vault.local.lab ($vaultIP) for Kerberos authentication" -ForegroundColor Cyan
     
     # Check if vault.local.lab resolves
