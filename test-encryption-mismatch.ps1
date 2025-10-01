@@ -86,3 +86,5 @@ Write-Host "Next steps:" -ForegroundColor White
 Write-Host "1. If encryption mismatch is the issue, we need to regenerate the keytab" -ForegroundColor Gray
 Write-Host "2. Or configure Windows to use arcfour-hmac encryption" -ForegroundColor Gray
 Write-Host "3. Or configure Vault to accept AES encryption" -ForegroundColor Gray
+
+

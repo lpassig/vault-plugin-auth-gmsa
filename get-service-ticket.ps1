@@ -66,3 +66,5 @@ Write-Host "=========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "If no ticket was obtained, the issue is SPN registration" -ForegroundColor White
 Write-Host "If ticket was obtained but auth still fails, it's encryption mismatch" -ForegroundColor White
+
+

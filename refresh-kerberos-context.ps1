@@ -54,3 +54,5 @@ if ($tickets -match "HTTP/vault.local.lab") {
 
 Write-Host ""
 Write-Host "Test complete!" -ForegroundColor Cyan
+
+

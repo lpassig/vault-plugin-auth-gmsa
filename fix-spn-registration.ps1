@@ -82,3 +82,5 @@ Write-Host "=========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "The SPN should now be correctly registered to your computer account." -ForegroundColor White
 Write-Host "This should resolve the 401 Unauthorized error." -ForegroundColor White
+
+

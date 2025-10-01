@@ -50,3 +50,5 @@ if ($httpsAuth -and $httpsAuth.StatusCode -eq 200) {
 
 Write-Host ""
 Write-Host "Protocol test complete!" -ForegroundColor Cyan
+
+

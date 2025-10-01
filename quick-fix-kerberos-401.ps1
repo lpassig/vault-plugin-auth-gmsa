@@ -162,3 +162,5 @@ Write-Host ""
 Write-Host "Now test your scheduled task:" -ForegroundColor White
 Write-Host "schtasks /Run /TN 'Test Curl Kerberos'" -ForegroundColor Gray
 Write-Host "Get-Content C:\vault-client\logs\test-curl-system.log -Tail 30" -ForegroundColor Gray
+
+

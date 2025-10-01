@@ -81,3 +81,5 @@ Write-Host "If this works, the solution is to:" -ForegroundColor White
 Write-Host "1. Use vault-keytab-svc account for authentication" -ForegroundColor Gray
 Write-Host "2. Or get domain admin to move SPN to EC2AMAZ-UB1QVDL$" -ForegroundColor Gray
 Write-Host "3. Or regenerate keytab for EC2AMAZ-UB1QVDL$" -ForegroundColor Gray
+
+

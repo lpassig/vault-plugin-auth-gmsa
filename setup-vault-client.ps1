@@ -6,7 +6,7 @@
 # =============================================================================
 
 param(
-    [string]$VaultUrl = "https://vault.local.lab:8200",
+    [string]$VaultUrl = "https://vault.example.com:8200",
     [string]$VaultRole = "vault-gmsa-role",
     [string]$TaskName = "VaultClientApp",
     [string]$Schedule = "Daily",

@@ -751,7 +751,7 @@ function Invoke-VaultAuthenticationHTTPNegotiate {
             Write-Log "Method 1: Using Invoke-RestMethod with UseDefaultCredentials..." -Level "INFO"
             
             $response = Invoke-RestMethod `
-                -Uri "$VaultUrl/v1/auth/gmsa/login" `
+                -Uri "$VaultUrl/v1/auth/kerberos/login" `
                 -Method Post `
                 -UseDefaultCredentials `
                 -UseBasicParsing `
@@ -771,7 +771,7 @@ function Invoke-VaultAuthenticationHTTPNegotiate {
         try {
             Write-Log "Method 2: Using WebRequest with UseDefaultCredentials..." -Level "INFO"
             
-            $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/gmsa/login")
+            $request = [System.Net.WebRequest]::Create("$VaultUrl/v1/auth/kerberos/login")
             $request.Method = "POST"
             $request.UseDefaultCredentials = $true
             $request.PreAuthenticate = $true
@@ -801,7 +801,7 @@ function Invoke-VaultAuthenticationHTTPNegotiate {
             } | ConvertTo-Json
             
             $response = Invoke-RestMethod `
-                -Uri "$VaultUrl/v1/auth/gmsa/login" `
+                -Uri "$VaultUrl/v1/auth/kerberos/login" `
                 -Method Post `
                 -Body $body `
                 -ContentType "application/json" `

@@ -83,7 +83,7 @@ if (Get-Command curl -ErrorAction SilentlyContinue) {
 # Test 5: PowerShell HTTP Negotiate Test
 Write-Host "5. PowerShell HTTP Negotiate Test:" -ForegroundColor Yellow
 $testUrls = @(
-    "https://vault.local.lab:8200/v1/auth/gmsa/login"
+    "https://vault.local.lab:8200/v1/auth/kerberos/login"
 )
 
 foreach ($url in $testUrls) {

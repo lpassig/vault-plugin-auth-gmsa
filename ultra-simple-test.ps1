@@ -35,3 +35,5 @@ if ($authResponse -and $authResponse.StatusCode -eq 200) {
 
 Write-Host ""
 Write-Host "Test complete!" -ForegroundColor Cyan
+
+
