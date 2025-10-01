@@ -53,13 +53,13 @@ Write-Host ""
 Write-Host "Step 2: Checking all SPNs for gMSA account..." -ForegroundColor Yellow
 try {
     $gmsaSpns = setspn -L $GMSAAccount 2>&1
-    Write-Host "SPNs registered to $GMSAAccount:" -ForegroundColor White
+    Write-Host "SPNs registered to ${GMSAAccount}:" -ForegroundColor White
     Write-Host $gmsaSpns -ForegroundColor Gray
     
     if ($gmsaSpns -match $SPN) {
-        Write-Host "SUCCESS: $SPN is registered to $GMSAAccount" -ForegroundColor Green
+        Write-Host "SUCCESS: $SPN is registered to ${GMSAAccount}" -ForegroundColor Green
     } else {
-        Write-Host "WARNING: $SPN is not registered to $GMSAAccount" -ForegroundColor Yellow
+        Write-Host "WARNING: $SPN is not registered to ${GMSAAccount}" -ForegroundColor Yellow
     }
 } catch {
     Write-Host "ERROR: Cannot list SPNs for gMSA account" -ForegroundColor Red
@@ -81,7 +81,7 @@ try {
     Write-Host "Add result: $addResult" -ForegroundColor Gray
     
     if ($addResult -match "successfully") {
-        Write-Host "SUCCESS: SPN $SPN registered to $GMSAAccount" -ForegroundColor Green
+        Write-Host "SUCCESS: SPN $SPN registered to ${GMSAAccount}" -ForegroundColor Green
     } else {
         Write-Host "WARNING: SPN registration may have failed" -ForegroundColor Yellow
         Write-Host "Result: $addResult" -ForegroundColor Yellow
@@ -99,7 +99,7 @@ try {
     Write-Host "Verification result:" -ForegroundColor White
     Write-Host $verifyResult -ForegroundColor Gray
     
-    if ($verifyResult -match $GMSAAccount) {
+    if ($verifyResult -match ${GMSAAccount}) {
         Write-Host "SUCCESS: SPN registration verified!" -ForegroundColor Green
     } else {
         Write-Host "ERROR: SPN registration verification failed" -ForegroundColor Red
