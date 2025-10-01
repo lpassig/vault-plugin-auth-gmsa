@@ -42,48 +42,48 @@ if (-not (Test-Path $logDir)) {
 # Create the gMSA client script
 $scriptPath = "$scriptDir\vault-gmsa-client.ps1"
 
-$scriptContent = @"
+$scriptContent = @'
 # Vault gMSA Client for Scheduled Task
 # Runs under gMSA identity
 
 param(
-    [string]`$VaultUrl = "$VaultUrl"
+    [string]$VaultUrl = "https://vault.local.lab:8200"
 )
 
 # Logging
 function Write-Log {
-    param([string]`$Message, [string]`$Level = "INFO")
-    `$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    `$logMessage = "[`$timestamp] [`$Level] `$Message"
-    Write-Host `$logMessage
-    `$logFile = "C:\vault-client\logs\vault-gmsa-`$(Get-Date -Format 'yyyy-MM-dd').log"
-    Add-Content -Path `$logFile -Value `$logMessage -ErrorAction SilentlyContinue
+    param([string]$Message, [string]$Level = "INFO")
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "[$timestamp] [$Level] $Message"
+    Write-Host $logMessage
+    $logFile = "C:\vault-client\logs\vault-gmsa-$(Get-Date -Format 'yyyy-MM-dd').log"
+    Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
 }
 
 Write-Log "Starting Vault gMSA authentication..." "INFO"
-Write-Log "Current user: `$(whoami)" "INFO"
+Write-Log "Current user: $(whoami)" "INFO"
 
 # Bypass SSL for testing
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {`$true}
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 
 try {
     # Authenticate with Vault using Kerberos
     Write-Log "Authenticating with Vault..." "INFO"
     
-    `$response = Invoke-RestMethod `
-        -Uri "`$VaultUrl/v1/auth/kerberos/login" `
+    $response = Invoke-RestMethod `
+        -Uri "$VaultUrl/v1/auth/kerberos/login" `
         -Method Post `
         -UseDefaultCredentials `
         -UseBasicParsing `
         -ErrorAction Stop
     
-    if (`$response.auth -and `$response.auth.client_token) {
+    if ($response.auth -and $response.auth.client_token) {
         Write-Log "SUCCESS: Authentication successful!" "SUCCESS"
-        Write-Log "Token: `$(`$response.auth.client_token)" "INFO"
+        Write-Log "Token: $($response.auth.client_token)" "INFO"
         
         # Test token
-        `$headers = @{"X-Vault-Token" = `$response.auth.client_token}
-        `$testResponse = Invoke-RestMethod -Uri "`$VaultUrl/v1/sys/health" -Headers `$headers -UseBasicParsing
+        $headers = @{"X-Vault-Token" = $response.auth.client_token}
+        $testResponse = Invoke-RestMethod -Uri "$VaultUrl/v1/sys/health" -Headers $headers -UseBasicParsing
         Write-Log "SUCCESS: Token validation successful!" "SUCCESS"
         
         exit 0
@@ -92,10 +92,10 @@ try {
         exit 1
     }
 } catch {
-    Write-Log "ERROR: Authentication failed: `$(`$_.Exception.Message)" "ERROR"
+    Write-Log "ERROR: Authentication failed: $($_.Exception.Message)" "ERROR"
     exit 1
 }
-"@
+'@
 
 Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8
 Write-Host "✓ Created gMSA client script: $scriptPath" -ForegroundColor Green
