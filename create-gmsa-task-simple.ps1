@@ -44,13 +44,8 @@ $scriptPath = "$scriptDir\vault-gmsa-client.ps1"
 
 $scriptContent = @'
 # Vault gMSA Client for Scheduled Task
-# Runs under gMSA identity
+param([string]$VaultUrl = "https://vault.local.lab:8200")
 
-param(
-    [string]$VaultUrl = "https://vault.local.lab:8200"
-)
-
-# Logging
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -67,15 +62,9 @@ Write-Log "Current user: $(whoami)" "INFO"
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 
 try {
-    # Authenticate with Vault using Kerberos
     Write-Log "Authenticating with Vault..." "INFO"
     
-    $response = Invoke-RestMethod `
-        -Uri "$VaultUrl/v1/auth/kerberos/login" `
-        -Method Post `
-        -UseDefaultCredentials `
-        -UseBasicParsing `
-        -ErrorAction Stop
+    $response = Invoke-RestMethod -Uri "$VaultUrl/v1/auth/kerberos/login" -Method Post -UseDefaultCredentials -UseBasicParsing -ErrorAction Stop
     
     if ($response.auth -and $response.auth.client_token) {
         Write-Log "SUCCESS: Authentication successful!" "SUCCESS"
@@ -85,7 +74,6 @@ try {
         $headers = @{"X-Vault-Token" = $response.auth.client_token}
         $testResponse = Invoke-RestMethod -Uri "$VaultUrl/v1/sys/health" -Headers $headers -UseBasicParsing
         Write-Log "SUCCESS: Token validation successful!" "SUCCESS"
-        
         exit 0
     } else {
         Write-Log "ERROR: No token received" "ERROR"
