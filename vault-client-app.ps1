@@ -30,8 +30,8 @@ try {
     $vaultHost = [System.Uri]::new($VaultUrl).Host
     Write-Host "Vault host: $vaultHost" -ForegroundColor Cyan
     
-    # Map vault.local.lab to vault.example.com for Kerberos
-    $vaultIP = "10.0.101.151"  # Your test environment IP
+    # Map vault.local.lab to the correct IP for Kerberos
+    $vaultIP = "10.0.101.8"  # Correct IP from DNS resolution
     Write-Host "Mapping vault.local.lab ($vaultIP) for Kerberos authentication" -ForegroundColor Cyan
     
     # Check if vault.local.lab resolves
@@ -755,7 +755,6 @@ function Invoke-VaultAuthenticationHTTPNegotiate {
                 -Method Post `
                 -UseDefaultCredentials `
                 -UseBasicParsing `
-                -SkipCertificateCheck `
                 -ErrorAction Stop
             
             if ($response.auth -and $response.auth.client_token) {
@@ -807,8 +806,7 @@ function Invoke-VaultAuthenticationHTTPNegotiate {
                 -Body $body `
                 -ContentType "application/json" `
                 -UseDefaultCredentials `
-                -UseBasicParsing `
-                -SkipCertificateCheck
+                -UseBasicParsing
             
             if ($response.auth -and $response.auth.client_token) {
                 Write-Log "SUCCESS: Vault authentication successful with role in body!" -Level "SUCCESS"
@@ -1300,6 +1298,17 @@ function Start-VaultClientApplication {
         Write-Log "  SPN: $SPN" -Level "INFO"
         Write-Log "  Secret Paths: $($SecretPaths -join ', ')" -Level "INFO"
         Write-Log "  Config Directory: $ConfigOutputDir" -Level "INFO"
+        
+        # Critical check: Ensure running under gMSA identity
+        if (-not $currentIdentity.EndsWith("$")) {
+            Write-Log "CRITICAL ERROR: Not running under gMSA identity!" -Level "ERROR"
+            Write-Log "Current identity: $currentIdentity" -Level "ERROR"
+            Write-Log "Expected identity: LOCAL\vault-gmsa$" -Level "ERROR"
+            Write-Log "SOLUTION: Run this script as a scheduled task configured to run under the gMSA account" -Level "ERROR"
+            return $false
+        }
+        
+        Write-Log "SUCCESS: Running under gMSA identity: $currentIdentity" -Level "SUCCESS"
         
         # Step 1: Authenticate to Vault using HTTP Negotiate (Primary Method)
         Write-Log "Step 1: Authenticating to Vault using HTTP Negotiate protocol..." -Level "INFO"

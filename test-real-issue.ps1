@@ -43,7 +43,9 @@ $testUrls = @(
 foreach ($url in $testUrls) {
     Write-Host "Testing: $url" -ForegroundColor Cyan
     try {
-        $response = Invoke-WebRequest -Uri $url -UseDefaultCredentials -TimeoutSec 10 -SkipCertificateCheck
+        # Use older PowerShell compatible method for SSL bypass
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+        $response = Invoke-WebRequest -Uri $url -UseDefaultCredentials -TimeoutSec 10
         Write-Host "SUCCESS: SSL connection works" -ForegroundColor Green
         Write-Host "Status: $($response.StatusCode)" -ForegroundColor Green
     } catch {
@@ -55,13 +57,12 @@ foreach ($url in $testUrls) {
     Write-Host ""
 }
 
-# Test 4: curl with different options
+# Test 4: curl with Windows-compatible syntax
 Write-Host "4. curl Tests:" -ForegroundColor Yellow
 if (Get-Command curl -ErrorAction SilentlyContinue) {
     $curlTests = @(
-        "curl -k -v https://vault.local.lab:8200/v1/sys/health",
-        "curl --negotiate --user : -k -v https://vault.local.lab:8200/v1/sys/health",
-        "curl --negotiate --user : -k -v https://vault.example.com:8200/v1/sys/health"
+        "curl.exe --insecure --verbose https://vault.local.lab:8200/v1/sys/health",
+        "curl.exe --negotiate --user : --insecure --verbose https://vault.local.lab:8200/v1/sys/health"
     )
     
     foreach ($curlTest in $curlTests) {
@@ -82,14 +83,15 @@ if (Get-Command curl -ErrorAction SilentlyContinue) {
 # Test 5: PowerShell HTTP Negotiate Test
 Write-Host "5. PowerShell HTTP Negotiate Test:" -ForegroundColor Yellow
 $testUrls = @(
-    "https://vault.local.lab:8200/v1/auth/gmsa/login",
-    "https://vault.example.com:8200/v1/auth/gmsa/login"
+    "https://vault.local.lab:8200/v1/auth/gmsa/login"
 )
 
 foreach ($url in $testUrls) {
     Write-Host "Testing HTTP Negotiate: $url" -ForegroundColor Cyan
     try {
-        $response = Invoke-RestMethod -Uri $url -Method Post -UseDefaultCredentials -UseBasicParsing -SkipCertificateCheck
+        # Use older PowerShell compatible method for SSL bypass
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+        $response = Invoke-RestMethod -Uri $url -Method Post -UseDefaultCredentials -UseBasicParsing
         Write-Host "SUCCESS: HTTP Negotiate works" -ForegroundColor Green
         Write-Host "Response: $($response | ConvertTo-Json)" -ForegroundColor Green
     } catch {
